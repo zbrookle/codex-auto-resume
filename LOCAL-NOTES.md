@@ -26,3 +26,9 @@ Keep the ChatGPT app open. Watchers don't survive a reboot.
 
 `doctor` will refuse the new version. Check the new bundle's IPC version table matches the values
 above, then bump `SUPPORTED_APP` in `codex_resume/app.py`, run the tests, `doctor` and `check`.
+
+## English translation
+
+The dashboard, CLI help, errors and status reasons are translated to English (commit "Translate
+dashboard, CLI and status messages to English"). Upstream updates will conflict with these strings;
+rebase this branch and redo the translation table if needed.
