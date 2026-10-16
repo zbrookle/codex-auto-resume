@@ -7,7 +7,7 @@ import sys
 import time
 import uuid
 
-from .app import Desktop, check_version, open_selected_thread
+from .app import Desktop, check_version, codex_binary, open_selected_thread
 from .controller import Controller
 from .policy import quota_status
 from .rpc import ReadOnlyServer
@@ -74,7 +74,7 @@ def serve_watch(args, store):
     def read_quota():
         nonlocal quota
         if quota is None:
-            reader = ReadOnlyServer(args.app / 'Contents/Resources/codex', args.home)
+            reader = ReadOnlyServer(codex_binary(args.app), args.home)
             reader.__enter__()
             quota = reader
         try:
@@ -85,7 +85,7 @@ def serve_watch(args, store):
             raise
     def load_original(tid):
         # Revalidate eligibility before navigation as well as before dispatch.
-        with ReadOnlyServer(args.app / 'Contents/Resources/codex', args.home) as reader:
+        with ReadOnlyServer(codex_binary(args.app), args.home) as reader:
             if any(r['id'] == tid for r in list_conversations(reader, (True,))):
                 return False
             saved = reader.query('thread/read', {'threadId': tid, 'includeTurns': True})
@@ -130,7 +130,7 @@ def main(argv=None):
         output(dict(result, note='只读检查；没有打开任务、开启托管或发送消息'))
         return
     if args.command in ('doctor', 'list'):
-        with ReadOnlyServer(args.app / 'Contents/Resources/codex', args.home) as server:
+        with ReadOnlyServer(codex_binary(args.app), args.home) as server:
             if args.command == 'list':
                 output(list_conversations(server))
                 return

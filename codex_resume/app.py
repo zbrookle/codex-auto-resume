@@ -13,10 +13,19 @@ import uuid
 
 from .policy import decide, fingerprint
 
-SUPPORTED_APP = ('26.820.60940', '7119')
+SUPPORTED_APP = ('26.1007.71326', '20398')  # local patch: was ('26.820.60940', '7119')
 MAX_FRAME = 32 * 1024 * 1024
-CONTINUATION = ('额度恢复后，请继续本会话原有的未完成工作。先核对当前进度与工作区，'
-                '不要重复已完成步骤，不扩大范围，不绕过审批。若工作已经完成或需要用户决定，请明确说明并停止。')
+CONTINUATION = ('Your usage limit has reset. Continue the unfinished work in this conversation. '
+                'First check current progress and the workspace, do not repeat completed steps, '
+                'do not expand scope, and do not bypass approvals. If the work is already done or '
+                'needs a user decision, say so clearly and stop.')
+
+
+def codex_binary(app_path):
+    # Local patch: newer ChatGPT.app builds moved the CLI into a nested bundle.
+    path = Path(app_path)
+    nested = path / 'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
+    return nested if nested.is_file() else path / 'Contents/Resources/codex'
 
 
 class AppError(RuntimeError):
