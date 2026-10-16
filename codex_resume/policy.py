@@ -23,21 +23,21 @@ def latest_turn(state):
         hist = history.get('history', {})
         islands = hist.get('islands', [])
         if not islands:
-            raise UnsupportedState('没有可验证的最新会话历史')
+            raise UnsupportedState('No verifiable recent conversation history')
         tail = islands[-1]
         if tail.get('newerBoundary', {}).get('status') != 'exhausted':
-            raise UnsupportedState('历史尾部不完整；不能判断最新一轮')
+            raise UnsupportedState('History tail incomplete; cannot determine the latest turn')
         entries = tail.get('entries', [])
         if not entries:
-            raise UnsupportedState('最新历史片段为空')
+            raise UnsupportedState('Latest history segment is empty')
         turn = hist.get('entitiesByKey', {}).get(entries[-1].get('value'))
     else:
         turns = state.get('turns')
         if not isinstance(turns, list) or not turns:
-            raise UnsupportedState('缺少会话轮次')
+            raise UnsupportedState('Missing conversation turns')
         turn = turns[-1]
     if not isinstance(turn, dict):
-        raise UnsupportedState('不支持的会话历史结构')
+        raise UnsupportedState('Unsupported conversation history structure')
     return turn
 
 
@@ -101,54 +101,54 @@ def interrupted_context_picker(state, request):
 
 def decide(state):
     if not isinstance(state, dict) or state.get('hostId') != 'local':
-        return Decision('stop', '仅支持本机 App 会话', task_state='unsupported')
+        return Decision('stop', 'Only local app conversations are supported', task_state='unsupported')
     if state.get('ephemeral') is not False:
-        return Decision('stop', '临时或未知类型会话不受支持', task_state='unsupported')
+        return Decision('stop', 'Ephemeral or unknown conversation types are not supported', task_state='unsupported')
     if state.get('resumeState') != 'resumed':
-        return Decision('wait', '对话仍在加载，等待状态同步', task_state='connecting')
+        return Decision('wait', 'Conversation still loading; waiting for status to sync', task_state='connecting')
     if not isinstance(state.get('requests'), list):
-        return Decision('stop', '缺少审批/用户输入状态')
+        return Decision('stop', 'Missing approval/user-input state')
     if any(not interrupted_context_picker(state, request) for request in state['requests']):
-        return Decision('stop', '任务正在等待审批或用户输入', task_state='needs_attention')
+        return Decision('stop', 'The task is waiting for an approval or user input', task_state='needs_attention')
     if state.get('threadGoalResumeConfirmation'):
-        return Decision('stop', '任务恢复需要用户确认', task_state='needs_attention')
+        return Decision('stop', 'Resuming the task needs user confirmation', task_state='needs_attention')
     goal = state.get('threadGoal')
     if goal is not None and (not isinstance(goal, dict) or goal.get('status') != 'active'):
-        return Decision('stop', '任务目标已暂停、受阻或结束', task_state='needs_attention')
+        return Decision('stop', 'The task goal is paused, blocked or finished', task_state='needs_attention')
     if state.get('queuedFollowUps'):
-        return Decision('stop', '已有用户排队消息', task_state='needs_attention')
+        return Decision('stop', 'A user message is already queued', task_state='needs_attention')
     runtime = state.get('threadRuntimeStatus')
     if not isinstance(runtime, dict):
-        return Decision('stop', '缺少运行状态')
+        return Decision('stop', 'Missing runtime status')
     runtime_type = runtime.get('type')
     if runtime_type == 'active':
         if runtime.get('activeFlags'):
-            return Decision('stop', '任务正在等待审批、输入或其他前置条件', task_state='needs_attention')
-        return Decision('wait', '任务正在执行；加入托管后，因额度耗尽中断时会等待恢复', task_state='running')
+            return Decision('stop', 'The task is waiting for an approval, input or another precondition', task_state='needs_attention')
+        return Decision('wait', 'The task is running; once monitored, it will wait for the reset if the usage limit stops it', task_state='running')
     # A real usage-limit failure is exposed by the pinned App as systemError,
     # not idle.  Only these two known terminal containers may be interpreted;
     # other/transitional runtime types retain enrollment but never authorize a send.
     if runtime_type not in ('idle', 'systemError'):
-        return Decision('wait', '任务运行状态正在同步；保留托管并稍后重查', task_state='connecting')
+        return Decision('wait', 'Task runtime status is syncing; keeping the watch and rechecking shortly', task_state='connecting')
     try:
         turn = latest_turn(state)
     except UnsupportedState as exc:
         return Decision('stop', str(exc))
     tid = turn.get('turnId')
     if not isinstance(tid, str) or not tid:
-        return Decision('stop', '最新一轮没有稳定标识')
+        return Decision('stop', 'The latest turn has no stable ID')
     status = turn.get('status')
     if status == 'inProgress':
-        return Decision('wait', '本轮执行状态正在同步', task_state='running')
+        return Decision('wait', 'This turn\'s status is syncing', task_state='running')
     if status == 'completed':
         if isinstance(goal, dict) and goal.get('status') == 'active':
-            return Decision('wait', '长任务目标仍在进行，等待 App 的下一步；不会因本轮结束额外发送消息', tid, 'running')
-        return Decision('stop', '本轮已结束，当前没有执行中的任务，无需加入托管', tid, 'idle')
+            return Decision('wait', 'The long-task goal is still active; waiting for the app\'s next step. No extra message is sent because this turn ended', tid, 'running')
+        return Decision('stop', 'This turn finished and nothing is running; nothing to monitor', tid, 'idle')
     if status == 'interrupted':
-        return Decision('stop', '本轮被停止；不会自动重启', tid, 'interrupted')
+        return Decision('stop', 'This turn was stopped; it will not be restarted automatically', tid, 'interrupted')
     if status != 'failed' or not quota_failure(turn):
-        return Decision('stop', '不是有结构化证据的额度耗尽错误', tid, 'other_failure')
-    return Decision('resume', '任务因额度耗尽暂停；确认额度恢复后在原对话继续', tid, 'quota_limited')
+        return Decision('stop', 'Not a usage-limit error with structured evidence', tid, 'other_failure')
+    return Decision('resume', 'The task paused because the usage limit ran out; it will continue in the original conversation once usage is confirmed reset', tid, 'quota_limited')
 
 
 def fingerprint(state):
@@ -171,37 +171,37 @@ def quota_status(response, now, limit_id=None):
     buckets = response.get('rateLimitsByLimitId')
     if isinstance(buckets, dict) and buckets:
         if limit_id is None and set(buckets) != {'codex'}:
-            return False, None, '存在多个额度桶；请显式指定 --limit-id'
+            return False, None, 'There are multiple usage buckets; specify --limit-id explicitly'
         bucket = buckets.get(limit_id or 'codex')
     else:
         bucket = response.get('rateLimits')
         if isinstance(bucket, dict) and limit_id and bucket.get('limitId') != limit_id:
             bucket = None
     if not isinstance(bucket, dict):
-        return False, None, '缺少所选额度桶'
+        return False, None, 'The selected usage bucket is missing'
     if bucket.get('spendControlReached') or bucket.get('individualLimit') is not None:
-        return False, None, '账户还有独立使用限制，需要人工检查'
+        return False, None, 'The account has a separate usage limit; check manually'
     reached = bucket.get('rateLimitReachedType')
     if reached not in (None, 'rate_limit_reached'):
-        return False, None, '账户存在非窗口额度限制'
+        return False, None, 'The account has a non-window usage limit'
     exhausted = []
     windows = [bucket.get('primary'), bucket.get('secondary')]
     if windows[0] is None:
-        return False, None, '缺少主窗口额度数据'
+        return False, None, 'Missing primary window usage data'
     for window in windows:
         if window is None:
             continue
         if not isinstance(window, dict):
-            return False, None, '不支持的额度窗口结构'
+            return False, None, 'Unsupported usage window structure'
         used, reset, duration = (window.get(k) for k in ('usedPercent', 'resetsAt', 'windowDurationMins'))
         if not numeric(used) or not 0 <= used <= 100 or not numeric(reset) or reset <= 0 or not numeric(duration) or duration <= 0:
-            return False, None, '额度数据不完整，不能推测可用时间'
+            return False, None, 'Usage data is incomplete; can\'t infer when it becomes available'
         if used >= 100:
             exhausted.append(reset)
         elif reset <= now:
-            return False, now + 60, '额度数据已过期，稍后重新读取'
+            return False, now + 60, 'Usage data is stale; re-reading shortly'
     if exhausted:
-        return False, max(now + 60, max(exhausted) + 15), '额度仍不足，等待实际重置后再检查'
+        return False, max(now + 60, max(exhausted) + 15), 'Usage still exhausted; waiting for the actual reset before checking again'
     if reached:
-        return False, now + 60, '服务仍标记额度耗尽，稍后再检查'
-    return True, now, '所选额度桶的所有窗口均有余额'
+        return False, now + 60, 'The service still reports the limit as reached; checking again shortly'
+    return True, now, 'All windows in the selected usage bucket have capacity'

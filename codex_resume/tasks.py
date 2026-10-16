@@ -19,17 +19,17 @@ def list_conversations(server, archive_filters=(False, True)):
         cursor, seen = None, set()
         while True:
             if time.monotonic() >= deadline:
-                raise RuntimeError('对话列表尚未读取完整，请稍后重试')
+                raise RuntimeError('Conversation list not fully read yet; try again shortly')
             params = {'limit': 100, 'archived': archived, 'sourceKinds': SOURCES,
                       'sortKey': 'updated_at', 'modelProviders': []}
             if cursor is not None:
                 params['cursor'] = cursor
             page = server.query('thread/list', params)
             if not isinstance(page, dict) or not isinstance(page.get('data'), list) or 'nextCursor' not in page:
-                raise RuntimeError('对话列表不完整，无法确认后续分页')
+                raise RuntimeError('Conversation list incomplete; later pages could not be confirmed')
             for row in page['data']:
                 if not isinstance(row, dict) or not isinstance(row.get('id'), str):
-                    raise RuntimeError('对话列表格式不受支持')
+                    raise RuntimeError('Unsupported conversation list format')
                 if row['id'] not in ids:
                     ids.add(row['id'])
                     rows.append({key: row.get(key) for key in ('id', 'name', 'preview', 'cwd', 'updatedAt')})
@@ -38,7 +38,7 @@ def list_conversations(server, archive_filters=(False, True)):
             if cursor is None:
                 break
             if not isinstance(cursor, str) or not cursor or cursor in seen:
-                raise RuntimeError('对话分页游标异常，未返回不完整列表')
+                raise RuntimeError('Unexpected pagination cursor; not returning an incomplete list')
             seen.add(cursor)
     return rows
 
@@ -46,32 +46,32 @@ def list_conversations(server, archive_filters=(False, True)):
 def stored_assessment(thread, thread_id):
     """Persisted turns may qualify for enrollment, NEVER for dispatch."""
     if not isinstance(thread, dict) or thread.get('id') != thread_id:
-        raise RuntimeError('读取结果与所选对话不匹配')
+        raise RuntimeError('The read result does not match the selected conversation')
     result = {'threadId': thread_id, 'title': thread.get('name') or thread.get('preview'),
               'source': 'history', 'connection': 'waiting', 'decision': 'stop',
               'canMonitor': False, 'taskState': 'unknown',
-              'reason': '暂时无法确认任务状态，不会自动续跑', 'checkedAt': time.time()}
+              'reason': 'Task status cannot be confirmed right now; will not auto-resume', 'checkedAt': time.time()}
     if thread.get('ephemeral') is not False:
         return result
     turns = thread.get('turns')
     if not isinstance(turns, list):
         return result
     if not turns:
-        return dict(result, taskState='empty', reason='这个对话还没有任务，无需加入托管')
+        return dict(result, taskState='empty', reason='This conversation has no task yet; nothing to monitor')
     turn = turns[-1]
     if not isinstance(turn, dict) or not isinstance(turn.get('id'), str) or not turn['id']:
         return result
     status = turn.get('status')
     if status == 'completed':
-        return dict(result, taskState='idle', reason='最近一轮已结束，未发现执行中的任务，无需加入托管')
+        return dict(result, taskState='idle', reason='The latest turn finished and nothing is running; nothing to monitor')
     if status == 'interrupted':
-        return dict(result, taskState='interrupted', reason='最近一轮被停止，不会自动重启')
+        return dict(result, taskState='interrupted', reason='The latest turn was stopped; it will not be restarted automatically')
     if status == 'inProgress' or (status == 'failed' and quota_failure(turn)):
         return dict(result, taskState='running' if status == 'inProgress' else 'quota_limited',
                     decision='wait', canMonitor=True,
-                    reason='历史记录显示任务尚在执行' if status == 'inProgress' else '历史记录显示任务因额度耗尽暂停')
+                    reason='History shows the task is still running' if status == 'inProgress' else 'History shows the task paused because the usage limit ran out')
     if status == 'failed':
-        return dict(result, taskState='other_failure', reason='任务因其他错误停止，不属于额度恢复续跑范围')
+        return dict(result, taskState='other_failure', reason='The task stopped on a different error; that is outside usage-reset resuming')
     return result
 
 
@@ -85,7 +85,7 @@ def inspect_task(home, app_path, thread_id):
         return {'threadId': thread_id, 'title': archived.get('name') or archived.get('preview'),
                 'decision': 'stop', 'canMonitor': False, 'taskState': 'archived',
                 'source': 'history', 'connection': 'not_checked', 'checkedAt': time.time(),
-                'reason': '这个对话已归档，不会加入托管或自动打开'}
+                'reason': 'This conversation is archived; it will not be monitored or opened automatically'}
     try:
         with Desktop(home, app_path) as desktop:
             state = desktop.snapshot(thread_id)

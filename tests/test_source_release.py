@@ -14,7 +14,7 @@ class SourceReleaseTests(unittest.TestCase):
             result = subprocess.run([ROOT / 'resume', '--help'], cwd=outside,
                                     text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('本地额度恢复续跑工具', result.stdout)
+        self.assertIn('resumes Codex app tasks after usage limits reset', result.stdout)
 
     def test_launcher_rejects_missing_python_without_running_tool(self):
         env = os.environ.copy()

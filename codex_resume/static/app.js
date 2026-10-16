@@ -24,20 +24,20 @@ const MUTATION_KEY = 'relay-unconfirmed-web-action-v1';
 const MUTATION_LOCK = 'relay-web-mutation-v1';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const assessments = new Map();
-const taskStates = {running:'任务执行中', quota_limited:'因额度暂停', needs_attention:'需要你处理',
-  idle:'本轮已结束', empty:'空对话', interrupted:'已手动停止', other_failure:'其他错误',
-  unsupported:'暂不支持', unknown:'状态未知', connecting:'等待连接', archived:'已归档'};
+const taskStates = {running:'Running', quota_limited:'Paused by usage limit', needs_attention:'Needs your attention',
+  idle:'Turn finished', empty:'Empty conversation', interrupted:'Stopped manually', other_failure:'Other error',
+  unsupported:'Not supported', unknown:'Unknown status', connecting:'Waiting for connection', archived:'Archived'};
 const states = {
-  starting: ['启动中', 'muted'], watching: ['托管中 · 正在执行', ''], waiting_quota: ['托管中 · 等待额度', 'warning'],
-  waiting_connection: ['托管中 · 等待连接', 'warning'], needs_attention: ['需要你处理', 'warning'],
-  resumed: ['已发送续跑', ''], stopped: ['已停止', 'muted'], paused: ['手动停止', 'muted'],
-  uncertain: ['结果未确认', 'danger'], blocked: ['需要检查', 'warning'],
-  budget: ['达到次数上限', 'muted'], changed: ['任务已变化', 'warning'], retrying: ['连接重试中', 'warning']
+  starting: ['Starting', 'muted'], watching: ['Monitoring · running', ''], waiting_quota: ['Monitoring · waiting for usage', 'warning'],
+  waiting_connection: ['Monitoring · waiting for connection', 'warning'], needs_attention: ['Needs your attention', 'warning'],
+  resumed: ['Resume sent', ''], stopped: ['Stopped', 'muted'], paused: ['Stopped manually', 'muted'],
+  uncertain: ['Result unconfirmed', 'danger'], blocked: ['Needs checking', 'warning'],
+  budget: ['Resume limit reached', 'muted'], changed: ['Task changed', 'warning'], retrying: ['Retrying connection', 'warning']
 };
 function node(tag, cls, text) { const el = document.createElement(tag); if (cls) el.className = cls; if (text !== undefined) el.textContent = text; return el; }
 function notice(text, warning = false) { $('notice').textContent = text; $('notice').className = warning ? 'notice warning' : 'notice'; $('notice').hidden = !text; }
 function busy(button, value, label) { button.disabled = value; button.setAttribute('aria-busy', String(value)); button.textContent = label; }
-function timeLabel(value) { return new Date(value * 1000).toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false}); }
+function timeLabel(value) { return new Date(value * 1000).toLocaleString('en-US', {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}); }
 function pendingMutation() {
   try {
     const raw=localStorage.getItem(MUTATION_KEY);
@@ -48,16 +48,16 @@ function pendingMutation() {
   } catch { return {invalid:true}; } // Corrupt/unavailable storage is never permission to resend.
 }
 function mutationUnavailable() {
-  if(!navigator.locks?.request) return '当前浏览器不支持安全的跨标签互斥：只读，不能开启或停止监控。';
+  if(!navigator.locks?.request) return 'This browser doesn\'t support safe cross-tab locking: read-only, can\'t start or stop monitoring.';
   try {
     const key=MUTATION_KEY+'-storage-probe';localStorage.setItem(key,'1');localStorage.removeItem(key);
-  } catch { return '浏览器存储不可用：只读，不能开启或停止监控。'; }
+  } catch { return 'Browser storage is unavailable: read-only, can\'t start or stop monitoring.'; }
   return '';
 }
 function renderMutation() {
   const pending=pendingMutation(), unavailable=mutationUnavailable();
   $('mutation-warning').hidden=!pending && !unavailable;
-  $('mutation-description').textContent=unavailable || (pending ? '上次开启或停止操作的结果尚未确认。刷新、重连和其他标签页都不会自动重试。请在本机核对监控记录和正在处理的请求。' : '');
+  $('mutation-description').textContent=unavailable || (pending ? 'The result of the last start or stop action isn\'t confirmed yet. Refreshing, reconnecting and other tabs never retry automatically. Check the watch records and any in-progress request on this Mac.' : '');
   $('acknowledge-mutation').disabled=!pending || !!unavailable || !connected || !$('confirm-mutation-review').checked || lastWatchRead <= (pending.createdAt || 0);
   $('start-button').disabled=starting || !!pending || !!unavailable;
   $('confirm-stop').disabled=!!pending || !!unavailable;
@@ -69,12 +69,12 @@ async function acknowledgeMutation() {
   try {
     await navigator.locks.request(MUTATION_LOCK,{ifAvailable:true},async lock=>{
       if(generation!==authGeneration || !connected || !$('confirm-mutation-review').checked || lastWatchRead <= (pending.createdAt || 0))return;
-      if(!lock) throw new Error('仍有标签页正在发送请求，不能解除保护。');
+      if(!lock) throw new Error('Another tab is still sending a request; protection can\'t be cleared.');
       const current=pendingMutation();
-      if(JSON.stringify(current)!==JSON.stringify(pending)) throw new Error('待核对的操作已变化，请重新刷新。');
+      if(JSON.stringify(current)!==JSON.stringify(pending)) throw new Error('The action awaiting review has changed; refresh again.');
       localStorage.removeItem(MUTATION_KEY);
       $('confirm-mutation-review').checked=false;
-      notice('已按你的人工核对解除保护；没有发送或重试任何操作。');
+      notice('Protection cleared based on your manual check; nothing was sent or retried.');
     });
   } catch(e) { notice(e.message,true); }
   renderMutation();
@@ -84,14 +84,14 @@ async function mutate(action,data) {
   const unavailable=mutationUnavailable();
   if(unavailable) throw new Error(unavailable);
   return navigator.locks.request(MUTATION_LOCK,{ifAvailable:true},async lock=>{
-    if(generation!==authGeneration) throw new Error('连接已变化，没有发送此操作。');
-    if(!lock || pendingMutation()) throw new Error('上一次操作尚未确认，请先核对监控记录。');
+    if(generation!==authGeneration) throw new Error('The connection changed; this action wasn\'t sent.');
+    if(!lock || pendingMutation()) throw new Error('The previous action isn\'t confirmed yet; check the watch records first.');
     // Persist before dispatch, while holding the same origin-wide Web Lock.
     localStorage.setItem(MUTATION_KEY,JSON.stringify({action,threadId:data.threadId,createdAt:Date.now()}));
     $('confirm-mutation-review').checked=false;renderMutation();
     try {
       const result=await api(action,data);
-      if(!result || (action==='start' ? result.threadId!==data.threadId || !Object.hasOwn(states,result.status) : result.stopped!==data.threadId)) throw new Error('操作响应与任务或状态不匹配，结果尚未确认。');
+      if(!result || (action==='start' ? result.threadId!==data.threadId || !Object.hasOwn(states,result.status) : result.stopped!==data.threadId)) throw new Error('The response doesn\'t match the task or status; the result is unconfirmed.');
       localStorage.removeItem(MUTATION_KEY);
       return result;
     } catch(e) {
@@ -102,7 +102,7 @@ async function mutate(action,data) {
 }
 function connectedUI(value) {
   connected = value;
-  $('connection-state').textContent = value ? '控制台已连接' : '尚未连接';
+  $('connection-state').textContent = value ? 'Dashboard connected' : 'Not connected';
   $('connection-state').className = `connection-state${value ? ' connected' : ''}`;
   $('login-panel').hidden = value;
   $('refresh').disabled = !value;
@@ -114,15 +114,15 @@ function forget() {
   authGeneration += 1;
   refreshGeneration += 1; reading=false; lastWatchRead=0;
   token = ''; sessionStorage.removeItem('relay-token'); connectedUI(false);
-  const loginButton=$('login-form').querySelector('button');if(loginButton)busy(loginButton,false,'连接');
+  const loginButton=$('login-form').querySelector('button');if(loginButton)busy(loginButton,false,'Connect');
   quota = null; threads = []; checked = null; lastQuotaFetch = 0; assessments.clear();
   if ($('task-dialog').open) $('task-dialog').close();
   if ($('stop-dialog').open) $('stop-dialog').close();
-  $('watch-list').replaceChildren(node('p', 'empty-state', '已断开页面。后台监控不会因此停止；请重新连接后查看或停止。'));
-  $('watch-updated').textContent = '监控状态未知';
+  $('watch-list').replaceChildren(node('p', 'empty-state', 'Page disconnected. Background monitoring keeps running; reconnect to view or stop it.'));
+  $('watch-updated').textContent = 'Monitoring status unknown';
   $('nav-count').textContent = '—'; $('task-count').textContent = '—';
-  for (const key of ['primary','secondary']) { $(key+'-percent').textContent = '—'; $(key+'-bar').value = 0; $(key+'-reset').textContent = '重置时间待读取'; $(key+'-clock').textContent = '—'; }
-  $('quota-updated').textContent = '尚未连接'; $('quota-reason').textContent = '连接后读取真实额度';
+  for (const key of ['primary','secondary']) { $(key+'-percent').textContent = '—'; $(key+'-bar').value = 0; $(key+'-reset').textContent = 'Reset time not read yet'; $(key+'-clock').textContent = '—'; }
+  $('quota-updated').textContent = 'Not connected'; $('quota-reason').textContent = 'Real usage is read after connecting';
 }
 async function api(path, data) {
   const generation = authGeneration;
@@ -136,27 +136,27 @@ async function api(path, data) {
     ...(data === undefined ? {} : {body: JSON.stringify(data)})
   });
   const result = await response.json();
-  if (generation !== authGeneration) throw new Error('连接已变化，请重新读取。');
+  if (generation !== authGeneration) throw new Error('The connection changed; read again.');
   if (response.status === 401) { forget(); $('login-error').textContent = result.error; }
-  if (!response.ok) { const error=new Error(result.error || '服务暂时不可用，请稍后刷新。');error.status=response.status;throw error; }
+  if (!response.ok) { const error=new Error(result.error || 'Service temporarily unavailable; refresh shortly.');error.status=response.status;throw error; }
   return result;
   } finally { clearTimeout(timeout); }
 }
 function renderQuota(value) {
   quota = value;
   $('version').textContent = `App ${value.app.version} · ${value.app.build}`;
-  $('quota-updated').textContent = `${timeLabel(value.checkedAt)} 读取`;
+  $('quota-updated').textContent = `Read ${timeLabel(value.checkedAt)}`;
   $('quota-reason').textContent = value.reason;
   for (const key of ['primary','secondary']) {
     const window = value[key];
     if (!window || !Number.isFinite(window.usedPercent) || window.usedPercent < 0 || window.usedPercent > 100) {
       $(key+'-percent').textContent = '—'; $(key+'-bar').value = 0;
-      $(key+'-reset').textContent = '窗口数据不可用'; continue;
+      $(key+'-reset').textContent = 'Window data unavailable'; continue;
     }
     const remaining = Math.max(0, Math.min(100, 100-window.usedPercent));
     $(key+'-percent').textContent = `${Math.round(remaining)}%`;
     $(key+'-bar').value = remaining;
-    $(key+'-reset').textContent = Number.isFinite(window.resetsAt) ? `${timeLabel(window.resetsAt)} 重置` : '重置时间未知';
+    $(key+'-reset').textContent = Number.isFinite(window.resetsAt) ? `Resets ${timeLabel(window.resetsAt)}` : 'Reset time unknown';
   }
   clocks();
 }
@@ -165,53 +165,53 @@ function clocks() {
     const reset = quota?.[key]?.resetsAt;
     if (!Number.isFinite(reset)) { $(key+'-clock').textContent = '—'; continue; }
     const seconds = Math.ceil(reset - Date.now()/1000);
-    if (seconds <= 0) { $(key+'-clock').textContent = '已到时间，等待重查'; continue; }
+    if (seconds <= 0) { $(key+'-clock').textContent = 'Time reached, waiting to recheck'; continue; }
     const days = Math.floor(seconds/86400), hours = Math.floor((seconds%86400)/3600), minutes = Math.floor((seconds%3600)/60);
-    $(key+'-clock').textContent = days > 0 ? `约 ${days}天 ${hours}时` : `${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
+    $(key+'-clock').textContent = days > 0 ? `about ${days}d ${hours}h` : `${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
   }
 }
-function titleFor(id) { return threads.find(t=>t.id===id)?.title || '对话标题暂不可用'; }
+function titleFor(id) { return threads.find(t=>t.id===id)?.title || 'Conversation title unavailable'; }
 function renderWatches(rows,readStarted=Date.now()) {
-  if(!Array.isArray(rows) || rows.some(r=>!r || !UUID.test(r.thread_id) || ![0,1,false,true].includes(r.enabled))) throw new Error('监控记录格式不正确，不能确认状态。');
+  if(!Array.isArray(rows) || rows.some(r=>!r || !UUID.test(r.thread_id) || ![0,1,false,true].includes(r.enabled))) throw new Error('Watch records are malformed; status can\'t be confirmed.');
   lastWatchRead=Math.max(lastWatchRead,readStarted);renderMutation();
   $('watch-error').textContent = '';
   $('task-count').textContent = rows.length;
   $('nav-count').textContent = rows.filter(r=>r.enabled).length;
-  $('watch-updated').textContent = `监控记录更新于 ${new Date().toLocaleTimeString('zh-CN')} · 页面打开时每 15 秒刷新`;
+  $('watch-updated').textContent = `Watch records updated ${new Date().toLocaleTimeString('en-US')} · refreshes every 15 s while open`;
   if (!rows.length) {
     const empty = node('div','empty-state');
     const symbol = node('div','relay-symbol'); symbol.setAttribute('aria-hidden','true'); symbol.append(node('span'),node('i'),node('span'));
-    empty.append(symbol,node('h3','','还没有监控任务'),node('p','','选择一个正在运行的长任务。若它因额度耗尽停止，续航会等待恢复。'),node('span','empty-note','不会接管其他任务 · 不会自动批准操作'));
+    empty.append(symbol,node('h3','','No monitored tasks yet'),node('p','','Pick a long task that\'s running. If it stops because the usage limit ran out, Relay waits for the reset.'),node('span','empty-note','Never takes over other tasks · Never approves actions'));
     $('watch-list').replaceChildren(empty); return;
   }
   const cards = rows.map(row => {
     const card=node('article','watch-card'), main=node('div'), side=node('div','watch-side');
     main.append(node('h3','',titleFor(row.thread_id)),node('p','',row.reason));
-    const meta=node('div','watch-meta'); meta.append(node('span','',`累计尝试 ${row.attempts} / ${row.max_resumes}`),node('span','',`状态写入 ${timeLabel(row.updated)}`));
-    if (row.process === 'not_running') meta.append(node('span','error','监控进程已退出，请检查后重新开启'));
+    const meta=node('div','watch-meta'); meta.append(node('span','',`Attempts ${row.attempts} / ${row.max_resumes}`),node('span','',`Updated ${timeLabel(row.updated)}`));
+    if (row.process === 'not_running') meta.append(node('span','error','The watcher process has exited; check, then start it again'));
     main.append(meta);
-    const state=states[row.status] || ['未知状态','warning']; side.append(node('span',`pill ${state[1]}`,state[0]));
-    const button=node('button','button secondary',row.enabled ? '停止监控' : '检查任务');
+    const state=states[row.status] || ['Unknown status','warning']; side.append(node('span',`pill ${state[1]}`,state[0]));
+    const button=node('button','button secondary',row.enabled ? 'Stop monitoring' : 'Check task');
     button.addEventListener('click',()=>row.enabled ? openStop(row) : openChooser(row.thread_id)); side.append(button); card.append(main,side); return card;
   });
   $('watch-list').replaceChildren(...cards);
 }
 async function refresh(forceQuota=false) {
   if (!connected || reading || document.hidden) return;
-  reading=true; busy($('refresh'),true,'读取中…');
+  reading=true; busy($('refresh'),true,'Reading…');
   const generation=authGeneration, request=++refreshGeneration, readStarted=Date.now();
   const current=()=>generation===authGeneration && request===refreshGeneration;
   const jobs = [api('watches').then(rows=>{if(current())renderWatches(rows,readStarted);}).catch(e=>{
     if(!current()) return;
-    $('watch-error').textContent=`读取失败：${e.message}`;
-    $('watch-updated').textContent='以下是上次读取的记录，不能代表当前状态。';
+    $('watch-error').textContent=`Read failed: ${e.message}`;
+    $('watch-updated').textContent='These are the last records read and may not reflect the current status.';
     for(const button of $('watch-list').querySelectorAll('button')) button.disabled=true;
   })];
   if(forceQuota || Date.now()-lastQuotaFetch>60000) {
     lastQuotaFetch=Date.now();
-    jobs.push(api('quota').then(value=>{if(current())renderQuota(value);}).catch(e=>{ if(!current())return; $('quota-reason').textContent=`读取失败：${e.message}`; $('quota-updated').textContent='数据可能过期，请刷新'; }));
+    jobs.push(api('quota').then(value=>{if(current())renderQuota(value);}).catch(e=>{ if(!current())return; $('quota-reason').textContent=`Read failed: ${e.message}`; $('quota-updated').textContent='Data may be stale; refresh'; }));
   }
-  await Promise.allSettled(jobs); if(current()){reading=false; busy($('refresh'),!connected,'刷新状态');}
+  await Promise.allSettled(jobs); if(current()){reading=false; busy($('refresh'),!connected,'Refresh');}
 }
 async function login(event) {
   event?.preventDefault();
@@ -219,20 +219,20 @@ async function login(event) {
   refreshGeneration+=1;reading=false;lastWatchRead=0;
   if(event) { token=$('token').value.trim(); sessionStorage.setItem('relay-token',token); }
   if(!token) return;
-  const button=$('login-form').querySelector('button'); busy(button,true,'连接中…'); $('login-error').textContent='';
+  const button=$('login-form').querySelector('button'); busy(button,true,'Connecting…'); $('login-error').textContent='';
   try {
     const readStarted=Date.now();
     const rows=await api('watches'); if(generation!==authGeneration)return;
     connectedUI(true); $('token').value=''; renderWatches(rows,readStarted); notice('');
     await Promise.allSettled([refresh(true), api('threads').then(async data=>{if(generation!==authGeneration)return;threads=data;const started=Date.now();const watches=await api('watches');if(generation===authGeneration)renderWatches(watches,started);})]);
   } catch(e) { if(generation===authGeneration){$('login-error').textContent=e.message; connectedUI(false);} }
-  finally { if(generation===authGeneration)busy(button,false,'连接'); }
+  finally { if(generation===authGeneration)busy(button,false,'Connect'); }
 }
 function selectedId() { return $('thread-id').value.trim().toLowerCase(); }
 function updateSelection() {
   const id=selectedId(), task=threads.find(t=>t.id===id);
   $('selected-task').hidden=!id;
-  $('selected-title').textContent=task?.title || '手动输入的任务';
+  $('selected-title').textContent=task?.title || 'Manually entered task';
   $('check-button').hidden=!id;
   for(const button of $('thread-options').querySelectorAll('.thread-option')) {
     const selected=button.dataset.threadId===id;
@@ -240,36 +240,36 @@ function updateSelection() {
     button.querySelector('.selection-marker').hidden=!selected;
     const assessment=assessments.get(button.dataset.threadId);
     const label=button.querySelector('.task-state');
-    if(label) label.textContent=assessment ? `上次识别：${taskStates[assessment.taskState]||'状态未知'}` : '选中后识别状态';
+    if(label) label.textContent=assessment ? `Last check: ${taskStates[assessment.taskState]||'Unknown status'}` : 'Select to check status';
   }
 }
 function renderThreads() {
   const term=$('search').value.trim().toLocaleLowerCase();
   const matches=threads.filter(t=>($('show-archived').checked || !t.archived) && (t.title+' '+t.id).toLocaleLowerCase().includes(term));
-  $('thread-count').textContent=`已读取 ${threads.length} 个本地对话 · 当前显示 ${matches.length} 个`;
+  $('thread-count').textContent=`${threads.length} local conversations read · showing ${matches.length}`;
   const buttons=matches.map(t=>{
     const button=node('button','thread-option'); button.type='button'; button.dataset.threadId=t.id;
-    const marker=node('span','selection-marker','已选中'); marker.hidden=true;
-    button.append(node('strong','',t.title),node('span','task-state meta','选中后识别状态'),marker);
-    if(t.archived) button.append(node('span','pill muted','已归档'));
+    const marker=node('span','selection-marker','Selected'); marker.hidden=true;
+    button.append(node('strong','',t.title),node('span','task-state meta','Select to check status'),marker);
+    if(t.archived) button.append(node('span','pill muted','Archived'));
     button.addEventListener('click',()=>{ if(starting) return; $('thread-id').value=t.id; updateSelection(); checkTask(); }); return button;
   });
-  $('thread-options').replaceChildren(...(buttons.length ? buttons : [node('p','meta',term?'没有匹配的对话，请换个标题搜索。':'暂无本地对话，请先在 Codex 中开始一个任务。')]));
+  $('thread-options').replaceChildren(...(buttons.length ? buttons : [node('p','meta',term?'No matching conversations; try another title.':'No local conversations yet; start a task in Codex first.')]));
   updateSelection();
 }
 function invalidateCheck() {
   checkGeneration+=1;
   checked=null; $('start-form').hidden=true; $('check-result').hidden=true; $('confirm-start').checked=false; $('action-error').textContent='';
-  busy($('check-button'),false,'检查任务');
+  busy($('check-button'),false,'Check task');
 }
 async function openChooser(id='') {
-  if(starting) { notice('开启请求仍在处理，请先等待结果并查看监控记录。',true); return; }
+  if(starting) { notice('A start request is still in progress; wait for the result and check the watch records.',true); return; }
   const generation=++pickerGeneration;
   pickerView(false);
   $('manual-selection').open=false;
   $('thread-id').value=id; invalidateCheck(); updateSelection(); $('search').value=''; $('thread-error').textContent='';
-  $('thread-options').replaceChildren(node('p','meta','正在读取全部本地对话…'));
-  $('thread-count').textContent='正在读取完整列表（包含后续分页）';
+  $('thread-options').replaceChildren(node('p','meta','Reading all local conversations…'));
+  $('thread-count').textContent='Reading the full list (including later pages)';
   if(!$('task-dialog').open) $('task-dialog').showModal();
   try {
     const rows=await api('threads');
@@ -285,7 +285,7 @@ function pickerView(details) {
   $('task-details').hidden=!details;
 }
 function backToList() {
-  const button=node('button','button secondary back-to-list','返回对话列表');
+  const button=node('button','button secondary back-to-list','Back to conversation list');
   button.type='button';
   button.addEventListener('click',()=>{ if(starting) return; invalidateCheck(); pickerView(false); $('search').focus({preventScroll:true}); });
   return button;
@@ -296,37 +296,37 @@ async function checkTask(event) {
   const id=selectedId(); invalidateCheck(); updateSelection();
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) {
     pickerView(false);
-    $('action-error').textContent='请选择列表中的对话；使用高级选项时，请填写完整的会话编号。'; return;
+    $('action-error').textContent='Pick a conversation from the list, or enter the full conversation ID under the advanced option.'; return;
   }
   const generation=checkGeneration;
   const stillSelected=()=>generation===checkGeneration && selectedId()===id && $('task-dialog').open;
-  busy($('check-button'),true,'检查中…');
+  busy($('check-button'),true,'Checking…');
   pickerView(true);
   $('task-details').scrollTop=0;
   $('check-result').className='check-result';
-  $('check-result').replaceChildren(backToList(),node('p','','正在识别任务状态…'));
+  $('check-result').replaceChildren(backToList(),node('p','','Checking task status…'));
   $('check-result').hidden=false;
   try {
     const result=await api(`check?threadId=${encodeURIComponent(id)}`);
     if(!stillSelected()) return;
-    if(result.threadId!==id) throw new Error('检查结果与所选任务不一致，已取消。请重新检查。');
+    if(result.threadId!==id) throw new Error('The check result doesn\'t match the selected task, so it was discarded. Check again.');
     checked=result; assessments.set(id,result); updateSelection();
     const canStart=canEnroll(result);
     $('check-result').className=`check-result${canStart?'':' blocked'}`;
-    $('check-result').replaceChildren(backToList(),node('span','pill',taskStates[result.taskState]||'状态未知'),node('strong','',result.title||titleFor(id)),node('p','',result.reason||'无法确认任务状态，不能加入托管。'),node('p','meta',`${result.source==='live'?'App 实时状态':'所选对话历史'} · ${canStart?'可以加入托管':'无需或暂不能托管'}`));
-    if(result.source==='history' && canStart) $('check-result').append(node('p','meta','实时连接尚未恢复。加入后会尝试在 App 中加载这个原对话；历史记录只用于筛选，重新核验实时状态与额度前不会发送消息。'));
-    if(result.model) $('check-result').append(node('p','meta',`沿用模型：${result.model}`));
-    if(result.ignoredInterruptedPickerRequests) $('check-result').append(node('p','meta',`已核实 ${result.ignoredInterruptedPickerRequests} 个旧轮次的文件夹选择请求属于已中断轮次；当前审批仍会阻止续跑。`));
+    $('check-result').replaceChildren(backToList(),node('span','pill',taskStates[result.taskState]||'Unknown status'),node('strong','',result.title||titleFor(id)),node('p','',result.reason||'Task status couldn\'t be confirmed; it can\'t be monitored.'),node('p','meta',`${result.source==='live'?'Live app status':'Saved conversation history'} · ${canStart?'Can be monitored':'No need to monitor, or not monitorable yet'}`));
+    if(result.source==='history' && canStart) $('check-result').append(node('p','meta','The live connection isn\'t back yet. After you start, the tool will try to load the original conversation in the app. History is only used for screening; nothing is sent until live status and usage are re-verified.'));
+    if(result.model) $('check-result').append(node('p','meta',`Keeps model: ${result.model}`));
+    if(result.ignoredInterruptedPickerRequests) $('check-result').append(node('p','meta',`Verified that ${result.ignoredInterruptedPickerRequests} old folder-picker request(s) belong to interrupted turns; current approvals still block resuming.`));
     $('check-result').hidden=false; $('start-form').hidden=!canStart;
     $('check-result').scrollIntoView({block:'start'});
   } catch(e) {
     if(!stillSelected()) return;
     checked=null; $('start-form').hidden=true;
     $('check-result').className='check-result blocked';
-    $('check-result').replaceChildren(backToList(),node('strong','','状态暂不可用：'+titleFor(id)),node('p','',e.message),node('p','meta','实时状态和历史记录均未能确认任务资格，或接口不兼容。此次没有开启监控或发送消息；已有托管不受本次检查影响。'));
+    $('check-result').replaceChildren(backToList(),node('strong','','Status unavailable: '+titleFor(id)),node('p','',e.message),node('p','meta','Neither live status nor history could confirm the task is eligible, or the interface is incompatible. Monitoring wasn\'t started and nothing was sent; existing watches aren\'t affected by this check.'));
     $('check-result').hidden=false;
     $('check-result').scrollIntoView({block:'start'});
-  } finally { if(stillSelected()) busy($('check-button'),false,'重新检查'); }
+  } finally { if(stillSelected()) busy($('check-button'),false,'Check again'); }
 }
 function canEnroll(result) {
   return result?.canMonitor===true && ['running','quota_limited'].includes(result.taskState) && ['wait','resume'].includes(result.decision);
@@ -334,29 +334,29 @@ function canEnroll(result) {
 async function startTask(event) {
   event.preventDefault();
   if(!checked || checked.threadId!==selectedId() || !canEnroll(checked) || starting) return;
-  starting=true; busy($('start-button'),true,'正在开启…'); $('action-error').textContent='';
+  starting=true; busy($('start-button'),true,'Starting…'); $('action-error').textContent='';
   const generation=authGeneration;
   const data={threadId:checked.threadId,maxResumes:Number($('max-resumes').value),confirmed:$('confirm-start').checked};
   if($('limit-id').value.trim()) data.limitId=$('limit-id').value.trim();
   try {
     const result=await mutate('start',data); if(generation!==authGeneration)return; $('task-dialog').close();
-    notice(`任务已提交监控，当前状态：${(states[result.status]||['待确认'])[0]}。请以下方监控记录为准。`); await refresh();
+    notice(`Task submitted for monitoring. Current status: ${(states[result.status]||['Pending confirmation'])[0]}. The watch records below are authoritative.`); await refresh();
   } catch(e) {
     if(generation!==authGeneration)return;
     $('action-error').textContent=e.message;
     // An uncertain HTTP outcome must never encourage a blind resubmit.
     checked=null; $('start-form').hidden=true; $('check-result').hidden=true;
-    notice('开启结果需检查。请先刷新监控记录，再决定是否重新检查任务。',true); await refresh();
-  } finally { starting=false; busy($('start-button'),false,'加入托管');renderMutation(); }
+    notice('The start result needs checking. Refresh the watch records before deciding whether to re-check the task.',true); await refresh();
+  } finally { starting=false; busy($('start-button'),false,'Start monitoring');renderMutation(); }
 }
 function openStop(row) { selectedStop=row.thread_id; $('stop-task').textContent=titleFor(row.thread_id); $('stop-error').textContent=''; $('stop-dialog').showModal();renderMutation(); }
 async function stopTask() {
   if(!selectedStop) return;
   const generation=authGeneration, target=selectedStop;
-  busy($('confirm-stop'),true,'正在停止…');
-  try { await mutate('stop',{threadId:target}); if(generation!==authGeneration)return; $('stop-dialog').close(); notice('已停止后续自动续跑。正在执行的 Codex 任务不受影响。'); await refresh(); }
-  catch(e) { if(generation===authGeneration){$('stop-error').textContent=e.message;notice('停止结果需检查。请刷新记录并人工核对；不会自动重试。',true);} }
-  finally { busy($('confirm-stop'),false,'停止监控');renderMutation(); }
+  busy($('confirm-stop'),true,'Stopping…');
+  try { await mutate('stop',{threadId:target}); if(generation!==authGeneration)return; $('stop-dialog').close(); notice('Future automatic resumes stopped. A running Codex task isn\'t affected.'); await refresh(); }
+  catch(e) { if(generation===authGeneration){$('stop-error').textContent=e.message;notice('The stop result needs checking. Refresh the records and verify manually; nothing retries automatically.',true);} }
+  finally { busy($('confirm-stop'),false,'Stop monitoring');renderMutation(); }
 }
 for (const dialog of [$('task-dialog'), $('stop-dialog')]) {
   dialog.addEventListener('keydown', event=>{
@@ -375,7 +375,7 @@ $('check-form').addEventListener('submit',checkTask);
 $('start-form').addEventListener('submit',startTask);
 $('cancel-stop').addEventListener('click',()=>$('stop-dialog').close());
 $('confirm-stop').addEventListener('click',stopTask);
-$('disconnect').addEventListener('click',()=>{forget();notice('页面已断开，后台监控不受影响。');});
+$('disconnect').addEventListener('click',()=>{forget();notice('Page disconnected; background monitoring isn\'t affected.');});
 setInterval(()=>refresh(),15000); setInterval(clocks,1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden) refresh(true);});
 if(token) login();

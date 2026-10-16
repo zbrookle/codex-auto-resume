@@ -693,7 +693,7 @@ class StartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             def fail_spawn(*args, **kwargs):
                 self.assertEqual(len(kwargs['pass_fds']), 1)
-                with self.assertRaisesRegex(RuntimeError, '已有一个监控进程'):
+                with self.assertRaisesRegex(RuntimeError, 'already has a watcher process'):
                     main(['--state-dir', directory, 'start', THREAD, '--max-resumes', '7'])
                 ledger = Store(directory)
                 try:

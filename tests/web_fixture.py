@@ -23,26 +23,26 @@ class Fixture(Backend):
         if action=='status': return self.rows
         if action=='doctor':
             return {'app':{'version':'UI fixture','build':'synthetic'},'ipc':'connected','ready':False,
-                'reason':'模拟数据：等待五小时窗口重置，不连接真实账户',
+                'reason':'Synthetic data: waiting for the 5-hour window reset; not connected to a real account',
                 'rateLimits':{'limitId':'codex','primary':{'usedPercent':100,'resetsAt':time.time()+1800},
                               'secondary':{'usedPercent':28,'resetsAt':time.time()+86400}}}
-        if action=='list': return [{'id':THREAD,'name':'[模拟] 为续跑工具开发本地 Web 界面','cwd':'/synthetic'},
-                                   {'id':COMPLETE,'name':'[模拟] 已完成任务 <script>','cwd':'/synthetic'}]
+        if action=='list': return [{'id':THREAD,'name':'[Synthetic] Build a local web UI for the resume tool','cwd':'/synthetic'},
+                                   {'id':COMPLETE,'name':'[Synthetic] Completed task <script>','cwd':'/synthetic'}]
         if action=='check':
-            return {'threadId':args[0],'title':'[模拟] 配套界面开发','decision':'stop' if args[0]==COMPLETE else 'wait',
+            return {'threadId':args[0],'title':'[Synthetic] Companion UI development','decision':'stop' if args[0]==COMPLETE else 'wait',
                     'taskState':'idle' if args[0]==COMPLETE else 'running',
                     'canMonitor':args[0]!=COMPLETE, 'source':'live', 'connection':'connected',
-                    'reason':'本轮正常结束；不推断还有工作需要继续' if args[0]==COMPLETE else '任务正在运行，等待观察',
+                    'reason':'This turn ended normally; not assuming more work remains' if args[0]==COMPLETE else 'Task is running; watching',
                     'model':'test-model'}
         if action=='start':
-            self.rows=[{'thread_id':args[0],'enabled':1,'status':'waiting_quota','reason':'模拟数据：额度耗尽，等待自然重置',
+            self.rows=[{'thread_id':args[0],'enabled':1,'status':'waiting_quota','reason':'Synthetic data: usage exhausted, waiting for the natural reset',
                         'attempts':0,'max_resumes':int(args[2]),'updated':time.time()}]
             return {'threadId':args[0],'status':'waiting_quota'}
         if action=='stop':
             for row in self.rows:
-                if row['thread_id']==args[0]: row.update(enabled=0,status='paused',reason='用户已关闭自动续跑',updated=time.time())
+                if row['thread_id']==args[0]: row.update(enabled=0,status='paused',reason='Automatic resume turned off by user',updated=time.time())
             return {'stopped':args[0]}
-        raise APIError('不支持的模拟操作')
+        raise APIError('Unsupported synthetic operation')
 
 if __name__=='__main__':
     import argparse

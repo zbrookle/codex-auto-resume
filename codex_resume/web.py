@@ -30,7 +30,7 @@ def thread_id(value):
             raise ValueError()
         return str(uuid.UUID(value))
     except ValueError:
-        raise APIError('请选择一个有效的任务 UUID。')
+        raise APIError('Choose a valid task UUID.')
 
 
 class Backend:
@@ -50,23 +50,23 @@ class Backend:
                                     capture_output=True, text=True, timeout=65)
         except subprocess.TimeoutExpired:
             # start may already have spawned a watcher. Never retry a mutation here.
-            raise APIError('操作超时，结果未确认。请刷新监控记录；不要重复点击开启。', 504)
+            raise APIError('The operation timed out and the result is unconfirmed. Refresh the watch records; don\'t click start again.', 504)
         if result.returncode:
             message = result.stderr.strip()
             if not message or len(message) > 300 or 'Traceback' in message:
-                message = '操作未成功。请检查 App 是否打开、任务是否可读取，以及本机工具日志。'
+                message = 'The operation did not succeed. Check that the app is open, the task is readable, and the local tool logs.'
             raise APIError(message, 409)
         try:
             return json.loads(result.stdout)
         except (ValueError, TypeError):
-            raise APIError('本机工具返回了无法识别的结果；请检查监控记录。', 502)
+            raise APIError('The local tool returned an unrecognized result; check the watch records.', 502)
 
     def watches(self):
         return self.command('status')
 
     def threads(self):
         rows = self.command('list')
-        return [{'id': row['id'], 'title': row.get('name') or (row.get('preview') or '未命名任务')[:120],
+        return [{'id': row['id'], 'title': row.get('name') or (row.get('preview') or 'Untitled task')[:120],
                  'cwd': row.get('cwd', ''), 'archived': row.get('archived', False),
                  'updatedAt': row.get('updatedAt')} for row in rows]
 
@@ -87,10 +87,10 @@ class Backend:
 
     def mutate(self, action, data):
         if not isinstance(data, dict):
-            raise APIError('请求必须是 JSON 对象。')
+            raise APIError('The request must be a JSON object.')
         allowed = {'threadId'} if action == 'stop' else {'threadId', 'maxResumes', 'limitId', 'confirmed'}
         if set(data) - allowed:
-            raise APIError('请求包含不支持的字段。')
+            raise APIError('The request contains unsupported fields.')
         target = thread_id(data.get('threadId'))
         if action == 'stop':
             # Serialize stop after an in-flight start, so a late arm cannot undo stop.
@@ -98,18 +98,18 @@ class Backend:
             with self.mutation_lock:
                 return self.command('stop', target)
         if action != 'start':
-            raise APIError('不支持的操作。', 404)
+            raise APIError('Unsupported operation.', 404)
         maximum = data.get('maxResumes', 3)
         if type(maximum) is not int or not 1 <= maximum <= 100:
-            raise APIError('累计续跑上限应为 1 到 100 的整数。')
+            raise APIError('The total resume limit must be an integer from 1 to 100.')
         if data.get('confirmed') is not True:
-            raise APIError('请先确认只监控所选任务，并了解停止操作的边界。')
+            raise APIError('First confirm you want to monitor only the selected task and understand what stopping does.')
         limit = data.get('limitId')
         if limit is not None and (not isinstance(limit, str) or not 1 <= len(limit) <= 100
                                   or limit.startswith('-') or not all(c.isalnum() or c in '_-.' for c in limit)):
-            raise APIError('额度桶 ID 格式不正确。')
+            raise APIError('Invalid usage bucket ID format.')
         if not self.mutation_lock.acquire(blocking=False):
-            raise APIError('另一个开启请求仍在处理，请查看监控记录，不要重复提交。', 409)
+            raise APIError('Another start request is still in progress; check the watch records and don\'t submit again.', 409)
         try:
             args = ['start', target, '--max-resumes', str(maximum)]
             if limit:
@@ -184,16 +184,16 @@ class Handler(BaseHTTPRequestHandler):
     def guard(self, api=False):
         # Exact authority blocks DNS rebinding and proxy Host confusion. No CORS.
         if self.headers.get_all('Host') != [self.server.authority]:
-            raise APIError('访问地址不匹配，请使用启动时提供的地址。', 403)
+            raise APIError('Address mismatch; use the address printed at startup.', 403)
         origin = self.headers.get('Origin')
         if origin is not None and origin != self.server.origin:
-            raise APIError('拒绝来自其他网站的请求。', 403)
+            raise APIError('Rejecting requests from other sites.', 403)
         if api:
             tokens = self.headers.get_all('X-Resume-Token') or []
             if len(tokens) != 1 or not secrets.compare_digest(tokens[0], self.server.token):
-                raise APIError('连接凭据无效或已过期，请重新连接。', 401)
+                raise APIError('The connection credential is invalid or expired; reconnect.', 401)
         if self.headers.get('Sec-Fetch-Site') not in (None, 'none', 'same-origin'):
-            raise APIError('请直接打开本机控制台。', 403)
+            raise APIError('Open the local dashboard directly.', 403)
 
     def do_GET(self):
         try:
@@ -212,49 +212,49 @@ class Handler(BaseHTTPRequestHandler):
             elif path.path == '/api/check':
                 params = parse_qs(path.query)
                 if set(params) != {'threadId'} or len(params['threadId']) != 1:
-                    raise APIError('需要一个明确的任务 UUID。')
+                    raise APIError('An exact task UUID is required.')
                 value = self.server.backend.check(params['threadId'][0])
             else:
-                raise APIError('没有这个页面或接口。', 404)
+                raise APIError('No such page or endpoint.', 404)
             self.send(200, value)
         except APIError as exc:
             self.send(exc.status, {'error': str(exc)})
         except (BrokenPipeError, ConnectionResetError, socket.timeout):
             pass
         except Exception:
-            self.send(500, {'error': '本机服务暂时不可用，请检查服务终端。'})
+            self.send(500, {'error': 'The local service is temporarily unavailable; check the service terminal.'})
 
     def do_POST(self):
         try:
             self.guard(api=True)
             if self.path not in ('/api/start', '/api/stop'):
-                raise APIError('不支持的操作。', 404)
+                raise APIError('Unsupported operation.', 404)
             if self.headers.get_content_type() != 'application/json':
-                raise APIError('只接受 JSON 请求。', 415)
+                raise APIError('Only JSON requests are accepted.', 415)
             lengths = self.headers.get_all('Content-Length') or []
             if len(lengths) != 1 or not lengths[0].isdigit() or self.headers.get('Transfer-Encoding'):
-                raise APIError('请求长度不正确。')
+                raise APIError('Invalid request length.')
             length = int(lengths[0])
             if not 0 < length <= 2048:
-                raise APIError('请求体过大或为空。', 413)
+                raise APIError('Request body too large or empty.', 413)
             try:
                 data = json.loads(self.rfile.read(length))
             except (ValueError, UnicodeError):
-                raise APIError('请求不是有效 JSON。')
+                raise APIError('The request is not valid JSON.')
             self.send(200, self.server.backend.mutate(self.path.rsplit('/', 1)[1], data))
         except APIError as exc:
             self.send(exc.status, {'error': str(exc)})
         except (BrokenPipeError, ConnectionResetError, socket.timeout):
             pass
         except Exception:
-            self.send(500, {'error': '操作结果未确认，请刷新监控记录，不要自动重试。'})
+            self.send(500, {'error': 'The result is unconfirmed; refresh the watch records and don\'t retry automatically.'})
 
 
 def serve(args):
     with CompanionServer(('127.0.0.1', args.port), Backend(args)) as server:
-        print(f'控制台地址：{server.origin}/', flush=True)
-        print(f'连接凭据：{server.token}', flush=True)
-        print('仅向你自己的设备提供凭据。服务重启后凭据失效；网页关闭不会停止监控。', flush=True)
+        print(f'Dashboard URL: {server.origin}/', flush=True)
+        print(f'Connection credential: {server.token}', flush=True)
+        print('Only give this credential to your own devices. It expires when the service restarts; closing the page does not stop monitoring.', flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

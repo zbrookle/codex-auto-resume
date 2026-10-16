@@ -45,10 +45,10 @@ def check_version(app_path):
     try:
         info = plistlib.loads((path / 'Contents/Info.plist').read_bytes())
     except (OSError, ValueError) as exc:
-        raise AppError('找不到可识别的 Codex App') from exc
+        raise AppError('No recognizable Codex app found') from exc
     version = (info.get('CFBundleShortVersionString'), info.get('CFBundleVersion'))
     if info.get('CFBundleIdentifier') != 'com.openai.codex' or version != SUPPORTED_APP:
-        raise AppError('App 版本不在已验证范围内；停止操作，需先适配新版本')
+        raise AppError('App version is not in the verified range; stopping. The new version must be supported first')
     return {'version': version[0], 'build': version[1]}
 
 
@@ -83,9 +83,9 @@ class Desktop:
         try:
             directory, endpoint = path.parent.lstat(), path.lstat()
             if not stat.S_ISDIR(directory.st_mode) or not stat.S_ISSOCK(endpoint.st_mode):
-                raise AppError('IPC 路径不是普通目录中的 socket')
+                raise AppError('The IPC path is not a socket in a regular directory')
             if any(s.st_uid != os.getuid() or s.st_mode & 0o077 for s in (directory, endpoint)):
-                raise AppError('IPC 权限或所有者不安全；不会自动修改权限')
+                raise AppError('IPC permissions or owner are unsafe; permissions will not be changed automatically')
             self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self.sock.settimeout(self.timeout)
             self.sock.connect(str(path))
@@ -107,7 +107,7 @@ class Desktop:
     def _send(self, msg):
         data = json.dumps(msg, ensure_ascii=False).encode()
         if not 0 < len(data) <= MAX_FRAME:
-            raise AppError('IPC 消息过大')
+            raise AppError('IPC message too large')
         self.sock.sendall(struct.pack('<I', len(data)) + data)
 
     def _exact(self, n, deadline):
@@ -115,11 +115,11 @@ class Desktop:
         while remaining:
             timeout = deadline - time.monotonic()
             if timeout <= 0:
-                raise TimeoutError('App 响应超时')
+                raise TimeoutError('App response timed out')
             self.sock.settimeout(timeout)
             chunk = self.sock.recv(remaining)
             if not chunk:
-                raise ConnectionUnavailable('App 连接已断开')
+                raise ConnectionUnavailable('App connection lost')
             chunks.append(chunk)
             remaining -= len(chunk)
         return b''.join(chunks)
@@ -127,10 +127,10 @@ class Desktop:
     def _read(self, deadline):
         size = struct.unpack('<I', self._exact(4, deadline))[0]
         if not 0 < size <= MAX_FRAME:
-            raise AppError('IPC 消息长度不受支持')
+            raise AppError('Unsupported IPC message length')
         msg = json.loads(self._exact(size, deadline))
         if not isinstance(msg, dict):
-            raise AppError('IPC 消息不是对象')
+            raise AppError('IPC message is not an object')
         if msg.get('type') == 'client-discovery-request':
             self._send({'type': 'client-discovery-response', 'requestId': msg['requestId'],
                         'response': {'canHandle': False}})
@@ -142,7 +142,7 @@ class Desktop:
             params = msg.get('params', {})
             if params.get('conversationId') == self.thread_id and params.get('hostId') == 'local' and msg.get('sourceClientId') == self.owner:
                 if msg.get('version') != 11:
-                    raise AppError('App 状态协议版本已变化')
+                    raise AppError('App state protocol version changed')
                 self.state_generation += 1
                 change = params.get('change', {})
                 if change.get('type') == 'snapshot':
@@ -152,7 +152,7 @@ class Desktop:
                     # Do not infer current state from a partial/missed patch stream.
                     self.snapshot_value = None
                 else:
-                    raise AppError('App 状态变更格式不受支持')
+                    raise AppError('Unsupported app state change format')
         return msg
 
     def request(self, method, params, version, target=None):
@@ -172,10 +172,10 @@ class Desktop:
                 # Only emit safe error codes, never raw remote error strings.
                 code = reply.get('error')
                 if code == 'no-client-found':
-                    raise ThreadUnavailable('所选对话暂未连接到 App')
-                raise AppError('App 拒绝请求或接口不兼容；未自动重试')
+                    raise ThreadUnavailable('The selected conversation is not connected to the app yet')
+                raise AppError('The app rejected the request or the interface is incompatible; not retried automatically')
             if reply.get('method') != method:
-                raise AppError('App 响应方法不匹配')
+                raise AppError('App response method mismatch')
             return reply
 
     def follow(self, enabled):
@@ -188,7 +188,7 @@ class Desktop:
         reply = self.request('thread-owner-discovery', {'hostId': 'local', 'conversationId': self.thread_id}, 1)
         self.owner = reply.get('handledByClientId')
         if not isinstance(self.owner, str):
-            raise AppError('缺少 App 任务所有者')
+            raise AppError('Missing app task owner')
         self.follow(False)
         self.snapshot_value = None
         self.follow(True)
@@ -197,7 +197,7 @@ class Desktop:
             self._read(deadline)
         state = self.snapshot_value
         if not isinstance(state, dict) or state.get('id') != self.thread_id:
-            raise AppError('App 返回了不匹配的任务状态')
+            raise AppError('The app returned a mismatched task state')
         return state
 
     def _drain_pending(self):
@@ -212,21 +212,21 @@ class Desktop:
             if not select.select([self.sock], [], [], 0)[0]:
                 return
             self._read(deadline)
-        raise AppError('App 状态仍在变化；取消本次续跑')
+        raise AppError('App state is still changing; canceling this resume')
 
     def resume(self, thread_id, expected_fingerprint, message_id, dispatch_guard=None):
         check_version(self.app_path)  # Stop if the app updated while we were waiting.
         state = self.snapshot(thread_id)
         if decide(state).action != 'resume' or fingerprint(state) != expected_fingerprint:
-            raise AppError('发送前任务状态已改变；取消本次续跑')
+            raise AppError('Task state changed before sending; canceling this resume')
         generation = self.state_generation
         self._drain_pending()
         if generation != self.state_generation:
-            raise AppError('发送前已收到新的任务状态；取消本次续跑')
+            raise AppError('A new task state arrived before sending; canceling this resume')
         request = {'threadId': thread_id, 'clientUserMessageId': message_id,
                    'input': [{'type': 'text', 'text': CONTINUATION, 'text_elements': []}]}
         if dispatch_guard is not None and not dispatch_guard():
-            raise AppError('托管已停止或发送授权已改变；取消本次续跑')
+            raise AppError('Monitoring stopped or send authorization changed; canceling this resume')
         reply = self.request('thread-follower-start-turn',
                              {'conversationId': thread_id, 'turnStart': {'request': request}},
                              2, self.owner)
@@ -235,5 +235,5 @@ class Desktop:
             if not isinstance(turn_id, str) or not turn_id:
                 raise KeyError('id')
         except (KeyError, TypeError) as exc:
-            raise AppError('续跑结果不确定；请在 App 检查，不会自动重发') from exc
+            raise AppError('Resume result uncertain; check in the app. It will not be resent automatically') from exc
         return turn_id

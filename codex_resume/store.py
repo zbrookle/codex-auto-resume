@@ -14,10 +14,10 @@ class Store:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         st = self.directory.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-            raise RuntimeError('状态目录必须属于当前用户，且只有当前用户可访问')
+            raise RuntimeError('The state directory must belong to, and be accessible only by, the current user')
         path = self.directory / 'state.sqlite3'
         if path.is_symlink():
-            raise RuntimeError('拒绝使用符号链接状态数据库')
+            raise RuntimeError('Refusing to use a symlinked state database')
         self.db = sqlite3.connect(path, timeout=5)
         os.chmod(path, 0o600)
         self.db.row_factory = sqlite3.Row
@@ -52,21 +52,21 @@ class Store:
             if (not stat.S_ISREG(expected.st_mode) or not stat.S_ISREG(actual.st_mode)
                     or (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino)
                     or actual.st_uid != os.getuid() or actual.st_mode & 0o077):
-                raise RuntimeError('继承的进程锁不是所选任务的私有锁文件')
+                raise RuntimeError('The inherited process lock is not the private lock file for the selected task')
             os.set_inheritable(fd, False)
         f = os.fdopen(fd, 'w')
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             f.close()
-            raise RuntimeError('该任务已有一个监控进程')
+            raise RuntimeError('This task already has a watcher process')
         self.lock_file = f
 
     def arm(self, thread_id, maximum):
         with self.db:
-            self.db.execute('''INSERT INTO watches VALUES (?,1,?,'starting','等待启动',NULL,?)
+            self.db.execute('''INSERT INTO watches VALUES (?,1,?,'starting','Waiting to start',NULL,?)
                 ON CONFLICT(thread_id) DO UPDATE SET enabled=1,max_resumes=excluded.max_resumes,
-                status='starting',reason='等待启动',pid=NULL,updated=excluded.updated''',
+                status='starting',reason='Waiting to start',pid=NULL,updated=excluded.updated''',
                 (thread_id, maximum, time.time()))
 
     def get(self, thread_id):
@@ -84,7 +84,7 @@ class Store:
                 (status, reason, os.getpid(), time.time(), int(disable), thread_id, int(only_enabled)))
 
     def stop(self, thread_id):
-        self.update(thread_id, 'paused', '用户已关闭自动续跑', True)
+        self.update(thread_id, 'paused', 'Automatic resume turned off by user', True)
 
     def attempt(self, thread_id, turn_id):
         row = self.db.execute('SELECT * FROM attempts WHERE thread_id=? AND failed_turn=?',

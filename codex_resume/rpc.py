@@ -56,13 +56,13 @@ class ReadOnlyServer:
         while b'\n' not in self.buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not self.selector.select(remaining):
-                raise TimeoutError('额度/任务查询超时')
+                raise TimeoutError('Usage/task query timed out')
             chunk = os.read(self.process.stdout.fileno(), 65536)
             if not chunk:
-                raise RuntimeError('只读查询服务已退出')
+                raise RuntimeError('The read-only query service exited')
             self.buffer += chunk
             if len(self.buffer) > 8 * 1024 * 1024:
-                raise RuntimeError('只读查询响应过大')
+                raise RuntimeError('Read-only query response too large')
         line, self.buffer = self.buffer.split(b'\n', 1)
         return json.loads(line)
 
@@ -79,10 +79,10 @@ class ReadOnlyServer:
             if reply.get('id') != request_id or 'method' in reply:
                 continue
             if 'error' in reply:
-                raise RuntimeError('官方只读接口查询失败；请检查登录和网络状态')
+                raise RuntimeError('Official read-only query failed; check your sign-in and network')
             return reply['result']
 
     def query(self, method, params=None):
         if method not in self.METHODS:
-            raise ValueError('这个连接仅允许读取额度、对话列表和所选对话历史')
+            raise ValueError('This connection may only read usage, the conversation list and the selected conversation history')
         return self._request(method, params)

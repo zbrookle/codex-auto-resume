@@ -102,8 +102,8 @@ test('failure identifies selected task and gives recovery guidance without enabl
   const h=harness();h.choose(A);const request=h.run('checkTask()');
   h.pending[0].reply({error:'App owner unavailable'},409);await request;
   assert.match(h.el('check-result').textContent,/Task A/);
-  assert.match(h.el('check-result').textContent,/历史/);
-  assert.match(h.el('check-result').textContent,/没有开启监控或发送消息/);
+  assert.match(h.el('check-result').textContent,/history/);
+  assert.match(h.el('check-result').textContent,/Monitoring wasn't started and nothing was sent/);
   assert.equal(h.el('start-form').hidden,true);
 });
 
@@ -135,7 +135,7 @@ test('only running or quota-limited selected tasks can be enrolled',async()=>{
     const h=harness();h.choose(A);const request=h.run('checkTask()');
     h.pending[0].reply({...h.result(A),taskState,source:'history',connection:'waiting'});await request;
     assert.equal(h.el('start-form').hidden,false);
-    assert.match(h.el('check-result').textContent,/重新核验实时状态/);
+    assert.match(h.el('check-result').textContent,/re-verified/);
   }
 });
 
@@ -207,12 +207,12 @@ test('POST success requires matching task and recognized start status',{timeout:
   for(const result of [{threadId:B,status:'watching'},{threadId:A,status:'invented'},{}]) {
     const h=harness();prepareStart(h);const request=h.run('startTask({preventDefault(){}})');
     await tick();h.pending[0].reply(result);await request;
-    assert.doesNotMatch(h.el('notice').textContent,/任务已提交监控/);
+    assert.doesNotMatch(h.el('notice').textContent,/Task submitted for monitoring/);
     assert.ok(h.run('pendingMutation()'));
   }
   const h=harness();h.run(`openStop({thread_id:'${A}'})`);const request=h.run('stopTask()');
   await tick();h.pending[0].reply({});await request;
-  assert.doesNotMatch(h.el('notice').textContent,/已停止后续/);
+  assert.doesNotMatch(h.el('notice').textContent,/Future automatic resumes stopped/);
   assert.ok(h.run('pendingMutation()'));
 });
 test('stale login error cannot disconnect a newly authenticated session',{timeout:2000},async()=>{
@@ -258,12 +258,12 @@ test('same-origin mutation lock is identical across clients and always non-queue
   h.pending[0].reply({threadId:A,status:'watching'});await first;assert.equal(h.run('pendingMutation()'),null);
   other.run(`openStop({thread_id:'${A}'})`);const stop=other.run('stopTask()');await tick();
   other.pending[0].reply({stopped:A});await stop;assert.equal(other.run('pendingMutation()'),null);
-  assert.match(other.el('notice').textContent,/已停止后续/);
+  assert.match(other.el('notice').textContent,/Future automatic resumes stopped/);
 });
 test('unsupported Web Locks and unavailable storage visibly fail closed before any write',async()=>{
   for(const setup of ["navigator.locks=undefined","localStorage.setItem=()=>{throw new Error('unavailable')}"]){
     const h=harness();h.run(setup+';renderMutation()');
-    assert.equal(h.el('mutation-warning').hidden,false);assert.match(h.el('mutation-description').textContent,/只读，不能开启或停止/);
+    assert.equal(h.el('mutation-warning').hidden,false);assert.match(h.el('mutation-description').textContent,/read-only, can't start or stop/);
     assert.equal(h.el('start-button').disabled,true);assert.equal(h.el('confirm-stop').disabled,true);
     prepareStart(h);await h.run('startTask({preventDefault(){}})');assert.equal(h.pending.length,0);
   }

@@ -19,36 +19,36 @@ def identifier(value):
     try:
         return str(uuid.UUID(value))
     except ValueError as exc:
-        raise argparse.ArgumentTypeError('需要准确的任务 UUID') from exc
+        raise argparse.ArgumentTypeError('An exact task UUID is required') from exc
 
 
 def positive(value):
     n = int(value)
     if not 1 <= n <= 100:
-        raise argparse.ArgumentTypeError('次数应在 1 到 100 之间')
+        raise argparse.ArgumentTypeError('Count must be between 1 and 100')
     return n
 
 
 def parser():
-    p = argparse.ArgumentParser(description='Codex App 本地额度恢复续跑工具')
+    p = argparse.ArgumentParser(description='Local tool that resumes Codex app tasks after usage limits reset')
     p.add_argument('--home', type=Path, default=Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')))
     p.add_argument('--app', type=Path, default=Path('/Applications/ChatGPT.app'))
     p.add_argument('--state-dir', type=Path, default=Path.home() / '.codex-auto-resume')
     sub = p.add_subparsers(dest='command', required=True)
-    sub.add_parser('doctor', help='只读检查 App 版本、连接和真实额度')
-    sub.add_parser('list', help='分页读取所有可用本地对话，包含归档；不会自动托管')
-    sub.add_parser('status', help='查看监控记录')
-    web = sub.add_parser('web', help='启动本机浏览器控制台')
+    sub.add_parser('doctor', help='Read-only check of app version, connection and real usage')
+    sub.add_parser('list', help='List all local conversations across pages, including archived; does not monitor anything')
+    sub.add_parser('status', help='Show watch records')
+    web = sub.add_parser('web', help='Start the local browser dashboard')
     web.add_argument('--port', type=int, default=8765)
-    check = sub.add_parser('check', help='只读识别所选对话的任务状态与托管资格')
+    check = sub.add_parser('check', help='Read-only check of the selected conversation\'s status and eligibility')
     check.add_argument('thread', type=identifier)
-    stop = sub.add_parser('stop', help='停止后续自动续跑，不打断正在执行的 App 任务')
+    stop = sub.add_parser('stop', help='Stop future automatic resumes without interrupting a running app task')
     stop.add_argument('thread', type=identifier)
     for name in ('start', '_watch'):
-        item = sub.add_parser(name, help='后台监控一个选定任务' if name == 'start' else '内部后台命令，请使用 start 启动')
+        item = sub.add_parser(name, help='Monitor one selected task in the background' if name == 'start' else 'Internal background command; use start instead')
         item.add_argument('thread', type=identifier)
-        item.add_argument('--max-resumes', type=positive, default=3, help='该任务累计尝试次数上限（默认 3）')
-        item.add_argument('--limit-id', default=None, help='多个额度桶时显式选择；单 codex 桶自动识别')
+        item.add_argument('--max-resumes', type=positive, default=3, help='Total attempt limit for this task (default 3)')
+        item.add_argument('--limit-id', default=None, help='Choose explicitly when there are multiple usage buckets; a single codex bucket is detected automatically')
         if name == '_watch':
             item.add_argument('--lock-fd', type=int, default=None, help=argparse.SUPPRESS)
     return p
@@ -127,7 +127,7 @@ def main(argv=None):
         version = check_version(args.app)
     if args.command == 'check':
         result = inspect_task(args.home, args.app, args.thread)
-        output(dict(result, note='只读检查；没有打开任务、开启托管或发送消息'))
+        output(dict(result, note='Read-only check; no task was opened, monitored or messaged'))
         return
     if args.command in ('doctor', 'list'):
         with ReadOnlyServer(codex_binary(args.app), args.home) as server:
@@ -141,7 +141,7 @@ def main(argv=None):
             output({'app': version, 'ipc': 'connected', 'quotaRead': 'ok',
                     'ready': ready, 'nextCheck': next_check, 'reason': reason,
                     'rateLimits': quota.get('rateLimits'),
-                    'note': '只读探测成功不代表某个具体任务已可续跑'})
+                    'note': 'A successful read-only probe does not mean any specific task can be resumed'})
         return
     store = Store(args.state_dir)
     try:
@@ -159,7 +159,7 @@ def main(argv=None):
             output(rows)
         elif args.command == 'stop':
             store.stop(args.thread)
-            output({'stopped': args.thread, 'note': '只取消未来自动续跑；已经发送的消息不会被撤回'})
+            output({'stopped': args.thread, 'note': 'Only cancels future automatic resumes; messages already sent are not retracted'})
         elif args.command == '_watch':
             serve_watch(args, store)
         elif args.command == 'start':
@@ -168,9 +168,9 @@ def main(argv=None):
             if not assessment['canMonitor']:
                 raise RuntimeError(assessment['reason'])
             if store.uncertain(args.thread):
-                raise RuntimeError('此任务有不确定的发送记录；先人工检查，不能自动重新接管')
+                raise RuntimeError('This task has an uncertain send record; check manually first. It cannot be re-monitored automatically')
             if store.count(args.thread) >= args.max_resumes:
-                raise RuntimeError('累计尝试次数已达到上限；检查记录后再决定是否提高 --max-resumes')
+                raise RuntimeError('Total attempt limit reached; review the records before deciding whether to raise --max-resumes')
             store.lock(args.thread)
             store.arm(args.thread, args.max_resumes)
             # Keep the same flock held across process creation. The child adopts
@@ -185,7 +185,7 @@ def main(argv=None):
                                              stdin=subprocess.DEVNULL, stdout=stream, stderr=stream,
                                              start_new_session=True, pass_fds=(lock_fd,))
             except Exception:
-                store.update(args.thread, 'blocked', '后台进程启动失败；未启用托管', True,
+                store.update(args.thread, 'blocked', 'Background process failed to start; monitoring not enabled', True,
                              only_enabled=True)
                 raise
             # Verify child liveness and its first ledger update, rather than claim launch from Popen alone.
@@ -196,11 +196,11 @@ def main(argv=None):
                 time.sleep(0.1)
             if child.poll() is not None:
                 if store.get(args.thread)['status'] == 'starting':
-                    store.update(args.thread, 'blocked', '后台进程启动失败', True, only_enabled=True)
-                raise RuntimeError('后台监控已停止，请用 status 查看原因')
+                    store.update(args.thread, 'blocked', 'Background process failed to start', True, only_enabled=True)
+                raise RuntimeError('Background monitoring stopped; run status to see why')
             output({'threadId': args.thread, 'pid': child.pid, 'log': str(log),
                     'status': store.get(args.thread)['status'],
-                    'note': '仅所选任务；不会自动批准操作。App 必须保持打开。'})
+                    'note': 'Selected task only; actions are never auto-approved. The app must stay open.'})
     finally:
         store.close()
 
@@ -209,7 +209,7 @@ def cli():
     try:
         main()
     except KeyboardInterrupt:
-        print('操作已中止', file=sys.stderr)
+        print('Operation aborted', file=sys.stderr)
         sys.exit(130)
     except Exception as exc:
         # Known local errors contain no session content. Other exceptions stay generic.
@@ -217,7 +217,7 @@ def cli():
         if isinstance(exc, (AppError, RuntimeError, ValueError)):
             print(str(exc), file=sys.stderr)
         else:
-            print('操作失败；请检查 App、目录权限和网络，未自动重试发送。', file=sys.stderr)
+            print('Operation failed; check the app, directory permissions and network. No send was retried.', file=sys.stderr)
         sys.exit(1)
 
 
