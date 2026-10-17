@@ -14,7 +14,8 @@ This is a maintained fork of [progressrdx/codex-auto-resume](https://github.com/
   UI-only, so the tool can't see them.
 - English UI, CLI and continuation prompt.
 
-Verified live on 26.1007 and 26.1013: tests, `doctor`, `list`, `check`. A real send has not yet run.
+Verified live on 26.1007 and 26.1013: tests, `doctor`, `list`, `check`. A real resume across a
+natural usage reset succeeded on 26.1007 (2026-10-16 01:33, app confirmed the new turn).
 
 ## Use
 
