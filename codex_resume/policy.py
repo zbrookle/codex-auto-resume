@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
+from pathlib import Path
 
 
 class UnsupportedState(ValueError):
@@ -99,10 +100,22 @@ def interrupted_context_picker(state, request):
     return len(matches) == 1 and matches[0].get('status') == 'interrupted'
 
 
+def persisted(state):
+    """True only for a conversation saved to disk.
+
+    Older Apps send `ephemeral: false`. Since 26.1013 the field is omitted, so a
+    missing value is accepted only when the conversation's rollout file exists.
+    """
+    if 'ephemeral' in state:
+        return state['ephemeral'] is False
+    path = state.get('rolloutPath')
+    return isinstance(path, str) and bool(path) and Path(path).is_file()
+
+
 def decide(state):
     if not isinstance(state, dict) or state.get('hostId') != 'local':
         return Decision('stop', 'Only local app conversations are supported', task_state='unsupported')
-    if state.get('ephemeral') is not False:
+    if not persisted(state):
         return Decision('stop', 'Ephemeral or unknown conversation types are not supported', task_state='unsupported')
     if state.get('resumeState') != 'resumed':
         return Decision('wait', 'Conversation still loading; waiting for status to sync', task_state='connecting')
@@ -115,6 +128,7 @@ def decide(state):
     goal = state.get('threadGoal')
     if goal is not None and (not isinstance(goal, dict) or goal.get('status') != 'active'):
         return Decision('stop', 'The task goal is paused, blocked or finished', task_state='needs_attention')
+    # Since 26.1013 queued follow-ups live only in the App UI and are absent here.
     if state.get('queuedFollowUps'):
         return Decision('stop', 'A user message is already queued', task_state='needs_attention')
     runtime = state.get('threadRuntimeStatus')

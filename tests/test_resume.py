@@ -188,6 +188,16 @@ class PolicyTests(unittest.TestCase):
             s = state(); del s[key]
             self.assertEqual(decide(s).action, 'stop')
 
+    def test_missing_ephemeral_requires_rollout_file(self):
+        with tempfile.NamedTemporaryFile() as rollout:
+            s = state(); del s['ephemeral']; s['rolloutPath'] = rollout.name
+            self.assertEqual(decide(s).action, 'resume')
+            s['ephemeral'] = True
+            self.assertEqual(decide(s).action, 'stop')
+        for path in (rollout.name, '', None, 42):
+            s = state(); del s['ephemeral']; s['rolloutPath'] = path
+            self.assertEqual(decide(s).action, 'stop', path)
+
     def test_legacy_history(self):
         s = state(); turn = latest_turn(s); del s['turnHistory']; s['turns'] = [turn]
         self.assertEqual(decide(s).action, 'resume')
@@ -807,14 +817,43 @@ for line in sys.stdin:
                 process = server.process
             self.assertIsNotNone(process.poll())
 
-    def test_version_mismatch_is_closed(self):
+    def fake_bundle(self, directory, asar=None, bundle='com.openai.codex'):
         import plistlib
+        contents=Path(directory)/'Contents'; (contents/'Resources').mkdir(parents=True)
+        (contents/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':bundle,
+            'CFBundleVersion':'future', 'CFBundleShortVersionString':'next'}))
+        if asar is not None: (contents/'Resources/app.asar').write_bytes(asar)
+        return directory
+
+    def table(self, **changes):
+        from codex_resume.app import PROTOCOL
+        table=dict(PROTOCOL, **{'ipc-connection-reset':1}); table.update(changes)
+        return b'var De=' + json.dumps(table, separators=(',', ':')).encode() + b';'
+
+    def test_any_app_version_with_matching_protocol_is_accepted(self):
         from codex_resume.app import check_version
         with tempfile.TemporaryDirectory() as directory:
-            contents=Path(directory)/'Contents'; contents.mkdir()
-            (contents/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.openai.codex',
-                'CFBundleVersion':'future', 'CFBundleShortVersionString':'next'}))
-            with self.assertRaises(AppError): check_version(directory)
+            asar=b'\x00junk' + self.table() + b'more code' + self.table() + b'\x00'
+            self.assertEqual(check_version(self.fake_bundle(directory, asar)), {'version':'next','build':'future'})
+
+    def test_changed_protocol_is_closed_and_named(self):
+        from codex_resume.app import check_version
+        with tempfile.TemporaryDirectory() as directory:
+            asar=self.table(**{'thread-follower-start-turn':3})
+            with self.assertRaisesRegex(AppError, 'thread-follower-start-turn'): check_version(self.fake_bundle(directory, asar))
+
+    def test_missing_unparseable_or_inconsistent_protocol_is_closed(self):
+        from codex_resume.app import check_version
+        bad=[None, b'no table here', b'{"thread-follower-start-turn":2,broken}',
+             self.table() + self.table(**{'thread-owner-discovery':2})]
+        for asar in bad:
+            with self.subTest(asar=asar), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(AppError): check_version(self.fake_bundle(directory, asar))
+
+    def test_other_bundle_is_closed(self):
+        from codex_resume.app import check_version
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(AppError): check_version(self.fake_bundle(directory, self.table(), 'com.example.app'))
 
     def test_private_directory_rejects_shared_permissions(self):
         with tempfile.TemporaryDirectory() as directory:

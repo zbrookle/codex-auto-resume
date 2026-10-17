@@ -1,5 +1,6 @@
-"""Version-pinned Desktop IPC. Never owns threads or responds to approvals."""
+"""Protocol-checked Desktop IPC. Never owns threads or responds to approvals."""
 import json
+import mmap
 import os
 from pathlib import Path
 import plistlib
@@ -13,7 +14,11 @@ import uuid
 
 from .policy import decide, fingerprint
 
-SUPPORTED_APP = ('26.1007.71326', '20398')  # local patch: was ('26.820.60940', '7119')
+# The IPC message versions this client speaks. Instead of pinning an App release,
+# check_version() requires the installed App to declare these exact versions.
+PROTOCOL = {'thread-stream-state-changed': 11, 'thread-stream-following-changed': 1,
+            'thread-owner-discovery': 1, 'thread-follower-start-turn': 2}
+_protocol_cache = {}
 MAX_FRAME = 32 * 1024 * 1024
 CONTINUATION = ('Your usage limit has reset. Continue the unfinished work in this conversation. '
                 'First check current progress and the workspace, do not repeat completed steps, '
@@ -40,22 +45,60 @@ class ThreadUnavailable(ConnectionUnavailable):
     """App is connected, but the selected conversation is not loaded."""
 
 
+def app_protocol(app_path):
+    """Read the IPC method-version table the App bundle declares.
+
+    Every copy of the table in app.asar must parse and agree; anything else is
+    treated as an unknown protocol. Cached per bundle file identity.
+    """
+    asar = Path(app_path) / 'Contents/Resources/app.asar'
+    try:
+        st = asar.stat()
+    except OSError as exc:
+        raise AppError('App bundle has no app.asar; cannot verify its protocol') from exc
+    key = (str(asar), st.st_ino, st.st_size, st.st_mtime_ns)
+    if key in _protocol_cache:
+        return _protocol_cache[key]
+    tables = set()
+    marker = b'"thread-follower-start-turn":'
+    with open(asar, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        i = data.find(marker)
+        while i != -1:
+            start, end = data.rfind(b'{', max(0, i - 4096), i), data.find(b'}', i, i + 4096)
+            try:
+                table = json.loads(data[start:end + 1]) if start != -1 and end != -1 else None
+            except ValueError:
+                table = None
+            if not isinstance(table, dict):
+                raise AppError('Could not parse the App protocol table; stopping')
+            tables.add(json.dumps({k: table.get(k) for k in PROTOCOL}, sort_keys=True))
+            i = data.find(marker, i + 1)
+    if len(tables) != 1:
+        raise AppError('App protocol table missing or inconsistent; stopping')
+    _protocol_cache[key] = json.loads(tables.pop())
+    return _protocol_cache[key]
+
+
 def check_version(app_path):
     path = Path(app_path)
     try:
         info = plistlib.loads((path / 'Contents/Info.plist').read_bytes())
     except (OSError, ValueError) as exc:
         raise AppError('No recognizable Codex app found') from exc
-    version = (info.get('CFBundleShortVersionString'), info.get('CFBundleVersion'))
-    if info.get('CFBundleIdentifier') != 'com.openai.codex' or version != SUPPORTED_APP:
-        raise AppError('App version is not in the verified range; stopping. The new version must be supported first')
-    return {'version': version[0], 'build': version[1]}
+    if info.get('CFBundleIdentifier') != 'com.openai.codex':
+        raise AppError('No recognizable Codex app found')
+    protocol = app_protocol(path)
+    if protocol != PROTOCOL:
+        changed = sorted(k for k in PROTOCOL if protocol.get(k) != PROTOCOL[k])
+        raise AppError('App IPC protocol changed (' + ', '.join(changed) + '); stopping. '
+                       'This client must be updated for the new protocol first')
+    return {'version': info.get('CFBundleShortVersionString'), 'build': info.get('CFBundleVersion')}
 
 
 def open_selected_thread(app_path, thread_id):
     """Navigate to an existing selected conversation. Never prefill/send a prompt.
 
-    The pinned App's localConversation deep-link handler checks thread existence
+    The App's localConversation deep-link handler checks thread existence
     then navigates to its original route. This does not make this client an owner.
     Success here only means navigation was requested; a fresh snapshot is required.
     """
@@ -141,7 +184,7 @@ class Desktop:
         if msg.get('type') == 'broadcast' and msg.get('method') == 'thread-stream-state-changed':
             params = msg.get('params', {})
             if params.get('conversationId') == self.thread_id and params.get('hostId') == 'local' and msg.get('sourceClientId') == self.owner:
-                if msg.get('version') != 11:
+                if msg.get('version') != PROTOCOL['thread-stream-state-changed']:
                     raise AppError('App state protocol version changed')
                 self.state_generation += 1
                 change = params.get('change', {})
@@ -180,12 +223,13 @@ class Desktop:
 
     def follow(self, enabled):
         self._send({'type': 'broadcast', 'method': 'thread-stream-following-changed',
-                    'sourceClientId': self.client_id, 'targetClientIds': [self.owner], 'version': 1,
+                    'sourceClientId': self.client_id, 'targetClientIds': [self.owner], 'version': PROTOCOL['thread-stream-following-changed'],
                     'params': {'hostId': 'local', 'conversationId': self.thread_id, 'following': enabled}})
 
     def snapshot(self, thread_id):
         self.thread_id = str(uuid.UUID(thread_id))
-        reply = self.request('thread-owner-discovery', {'hostId': 'local', 'conversationId': self.thread_id}, 1)
+        reply = self.request('thread-owner-discovery', {'hostId': 'local', 'conversationId': self.thread_id},
+                             PROTOCOL['thread-owner-discovery'])
         self.owner = reply.get('handledByClientId')
         if not isinstance(self.owner, str):
             raise AppError('Missing app task owner')
@@ -229,7 +273,7 @@ class Desktop:
             raise AppError('Monitoring stopped or send authorization changed; canceling this resume')
         reply = self.request('thread-follower-start-turn',
                              {'conversationId': thread_id, 'turnStart': {'request': request}},
-                             2, self.owner)
+                             PROTOCOL['thread-follower-start-turn'], self.owner)
         try:
             turn_id = reply['result']['result']['turn']['id']
             if not isinstance(turn_id, str) or not turn_id:

@@ -3,13 +3,18 @@
 This is a maintained fork of [progressrdx/codex-auto-resume](https://github.com/progressrdx/codex-auto-resume)
 (remote `upstream`). It builds on upstream commit `22c773c`, audited 2026-10-14, with these changes:
 
-- `SUPPORTED_APP` pinned to ChatGPT.app `26.1007.71326` / build `20398`.
+- **Protocol check instead of a version pin.** `check_version()` reads the IPC method-version
+  table from the App's `app.asar` and requires `PROTOCOL` in `codex_resume/app.py`
+  (state-changed 11, following-changed 1, owner-discovery 1, follower-start-turn 2). Any App
+  version declaring those versions is accepted. The same table supplies the versions the
+  client sends.
 - `codex_binary()` finds the CLI at `Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`.
-- Continuation prompt translated to English.
+- 26.1013 dropped `ephemeral` and `queuedFollowUps` from the conversation state. A missing
+  `ephemeral` is accepted only when the `rolloutPath` file exists. Queued follow-ups are now
+  UI-only, so the tool can't see them.
+- English UI, CLI and continuation prompt.
 
-Verified on 26.1007: all 99 tests, `doctor`, live `check`, and the app bundle's IPC version table
-(state-changed 11, owner-discovery 1, following-changed 1, follower-start-turn 2) plus optional
-`turnStart.context`. A real send has not yet run on this version.
+Verified live on 26.1007 and 26.1013: tests, `doctor`, `list`, `check`. A real send has not yet run.
 
 ## Use
 
@@ -25,8 +30,10 @@ Keep the ChatGPT app open. Watchers don't survive a reboot.
 
 ## After a ChatGPT app update
 
-`doctor` will refuse the new version. Check the new bundle's IPC version table matches the values
-above, then bump `SUPPORTED_APP` in `codex_resume/app.py`, run the tests, `doctor` and `check`.
+Usually nothing is needed. If `doctor` reports `App IPC protocol changed (...)`, the App changed
+a message the tool sends or reads, so review the named method in the new bundle before updating
+`PROTOCOL`. If `check` rejects a conversation it used to accept, the conversation state shape
+changed; compare the live snapshot's keys against `policy.decide()`.
 
 ## English translation
 

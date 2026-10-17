@@ -64,10 +64,12 @@ It does **not** switch accounts, buy credits, redeem resets, approve tool calls,
 - macOS
 - Python 3.9 or newer
 - The Codex desktop app installed, signed in, and kept open
-- Currently verified App version: `26.820.60940 / build 7119`
+- Last verified App version: `26.1013.40934 / build 20770` (fork)
 - Default App path: `/Applications/ChatGPT.app`
 
-Unsupported App versions are rejected instead of silently using an unverified internal protocol.
+Instead of pinning one App release, the fork checks the IPC protocol table the App bundle declares.
+Any App version that declares the same message versions is accepted; a changed protocol is rejected
+instead of silently using an unverified internal protocol.
 
 ### Let Codex start it for you (recommended for beginners)
 
