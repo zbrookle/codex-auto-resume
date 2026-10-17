@@ -68,7 +68,7 @@ class Backend:
         rows = self.command('list')
         return [{'id': row['id'], 'title': row.get('name') or (row.get('preview') or 'Untitled task')[:120],
                  'cwd': row.get('cwd', ''), 'archived': row.get('archived', False),
-                 'updatedAt': row.get('updatedAt')} for row in rows]
+                 'updatedAt': row.get('updatedAt'), 'host': row.get('host') or 'local'} for row in rows]
 
     def check(self, value):
         return self.command('check', thread_id(value))

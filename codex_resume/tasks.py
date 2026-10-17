@@ -1,4 +1,6 @@
 """Conversation discovery and enrollment, separate from permission to send."""
+import json
+from pathlib import Path
 import socket
 import time
 import uuid
@@ -43,6 +45,56 @@ def list_conversations(server, archive_filters=(False, True)):
     return rows
 
 
+def cloud_conversations(home):
+    """Cloud-hosted conversations the App remembers in its local state. Display only.
+
+    The App reaches these through its own connection to a cloud host, and only
+    lets other clients follow local conversations, so they are never resumable.
+    Unreadable or unexpected state yields an empty list.
+    """
+    try:
+        state = json.loads((Path(home) / '.codex-global-state.json').read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(state, dict):
+        return []
+    atoms = state.get('electron-persisted-atom-state')
+    atoms = atoms if isinstance(atoms, dict) else {}
+    hosts = {}
+    membership = state.get('thread-project-membership-host-ids')
+    if isinstance(membership, dict):
+        hosts.update({t: h for t, h in membership.items() if isinstance(h, str) and h and h != 'local'})
+    prototypes = atoms.get('cloud-thread-prototype-threads-by-account-v1')
+    for threads in (prototypes.values() if isinstance(prototypes, dict) else ()):
+        for t in (threads if isinstance(threads, dict) else ()):
+            hosts.setdefault(t, 'durable')
+    descriptions = atoms.get('thread-descriptions-v1')
+    descriptions = descriptions if isinstance(descriptions, dict) else {}
+    activity = atoms.get('thread-user-activity-times-v1')
+    activity = activity if isinstance(activity, dict) else {}
+    rows = []
+    for tid, host in hosts.items():
+        try:
+            tid = str(uuid.UUID(tid))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        seen = activity.get(json.dumps([host, tid], separators=(',', ':')))
+        name = descriptions.get(tid)
+        rows.append({'id': tid, 'name': name if isinstance(name, str) and name else None,
+                     'preview': 'Cloud conversation', 'cwd': None,
+                     'updatedAt': seen / 1000 if isinstance(seen, (int, float)) else None,
+                     'archived': False, 'host': host})
+    return sorted(rows, key=lambda r: r['updatedAt'] or 0, reverse=True)
+
+
+def cloud_assessment(row):
+    return {'threadId': row['id'], 'title': row.get('name') or row.get('preview'), 'host': row['host'],
+            'decision': 'stop', 'canMonitor': False, 'taskState': 'cloud',
+            'source': 'history', 'connection': 'not_checked', 'checkedAt': time.time(),
+            'reason': f"This conversation runs on a cloud host ({row['host']}). The app only lets this tool "
+                      'follow and resume local conversations, so it can\'t be monitored'}
+
+
 def stored_assessment(thread, thread_id):
     """Persisted turns may qualify for enrollment, NEVER for dispatch."""
     if not isinstance(thread, dict) or thread.get('id') != thread_id:
@@ -77,6 +129,9 @@ def stored_assessment(thread, thread_id):
 
 def inspect_task(home, app_path, thread_id):
     thread_id = str(uuid.UUID(thread_id))
+    cloud = next((r for r in cloud_conversations(home) if r['id'] == thread_id), None)
+    if cloud:
+        return cloud_assessment(cloud)
     # Archiving is a user stop signal, even if the last persisted turn was still
     # in progress. Never navigate to or enroll an archived conversation.
     with ReadOnlyServer(codex_binary(app_path), home) as server:

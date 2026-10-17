@@ -52,3 +52,16 @@ git push
 ```
 
 Review upstream changes before merging, as with the original audit: they run against your Codex app.
+
+## Cloud (durable) conversations
+
+`list` and the dashboard also show conversations on cloud hosts such as `durable`, read from the
+App's `~/.codex/.codex-global-state.json`. They're marked "Cloud · not resumable", and `check`/`start`
+refuse them without contacting anything. Tested 2026-10-17 (App 26.1013, CLI 0.163.0-alpha.10.2):
+
+- The App only answers owner discovery for its one local host, so the IPC follower route can't reach them.
+- `wss://codex-cloud-backend.chatgpt.com:443` (the `durable` app server) returns 403 to both a
+  stdlib client (Cloudflare challenge) and the official `codex agents --remote`.
+- `codex cloud list` doesn't include them.
+
+Revisit if the CLI gains a supported way to reach the durable host.

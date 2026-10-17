@@ -291,6 +291,44 @@ class TaskDiscoveryTests(unittest.TestCase):
         with self.assertRaises(AppError): inspect_task(Path('/home'), Path('/app'), THREAD)
         self.assertTrue(all(c.args[0]=='thread/list' for c in reader.query.call_args_list))
 
+    def cloud_home(self, directory, state):
+        Path(directory, '.codex-global-state.json').write_text(json.dumps(state))
+        return Path(directory)
+
+    def test_cloud_conversations_come_from_app_state(self):
+        other = '01a14bee-9f0f-7464-b9fc-eaad029bd000'
+        state = {'thread-project-membership-host-ids': {THREAD: 'durable', 'local-thread': 'local', 'not-a-uuid': 'durable'},
+                 'electron-persisted-atom-state': {
+                     'cloud-thread-prototype-threads-by-account-v1': {'acct': {other: {'environmentId': 'env'}}},
+                     'thread-descriptions-v1': {THREAD: 'Improve enemy fidelity'},
+                     'thread-user-activity-times-v1': {json.dumps(['durable', THREAD], separators=(',', ':')): 1792275193541}}}
+        from codex_resume.tasks import cloud_conversations
+        with tempfile.TemporaryDirectory() as directory:
+            rows = cloud_conversations(self.cloud_home(directory, state))
+        self.assertEqual([r['id'] for r in rows], [THREAD, other])
+        self.assertEqual(rows[0]['name'], 'Improve enemy fidelity')
+        self.assertEqual(rows[0]['updatedAt'], 1792275193.541)
+        self.assertTrue(all(r['host'] == 'durable' and not r['archived'] for r in rows))
+
+    def test_unreadable_app_state_lists_no_cloud_conversations(self):
+        from codex_resume.tasks import cloud_conversations
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(cloud_conversations(Path(directory)), [])
+            Path(directory, '.codex-global-state.json').write_text('{broken')
+            self.assertEqual(cloud_conversations(Path(directory)), [])
+            for state in ([], {'thread-project-membership-host-ids': ['x']}, {'electron-persisted-atom-state': 3}):
+                self.assertEqual(cloud_conversations(self.cloud_home(directory, state)), [])
+
+    @patch('codex_resume.tasks.ReadOnlyServer')
+    @patch('codex_resume.tasks.Desktop')
+    def test_cloud_thread_is_never_monitorable_and_never_contacted(self, desktop, server):
+        with tempfile.TemporaryDirectory() as directory:
+            home = self.cloud_home(directory, {'thread-project-membership-host-ids': {THREAD: 'durable'}})
+            result = inspect_task(home, Path('/app'), THREAD)
+        self.assertFalse(result['canMonitor'])
+        self.assertEqual((result['taskState'], result['decision'], result['host']), ('cloud', 'stop', 'durable'))
+        server.assert_not_called(); desktop.assert_not_called()
+
     @patch('codex_resume.tasks.ReadOnlyServer')
     @patch('codex_resume.tasks.Desktop')
     def test_archived_thread_cannot_enroll_even_if_last_turn_was_running(self, desktop, server):

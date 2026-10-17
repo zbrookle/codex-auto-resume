@@ -12,7 +12,7 @@ from .controller import Controller
 from .policy import quota_status
 from .rpc import ReadOnlyServer
 from .store import Store
-from .tasks import inspect_task, list_conversations, stored_assessment
+from .tasks import cloud_conversations, inspect_task, list_conversations, stored_assessment
 
 
 def identifier(value):
@@ -36,7 +36,7 @@ def parser():
     p.add_argument('--state-dir', type=Path, default=Path.home() / '.codex-auto-resume')
     sub = p.add_subparsers(dest='command', required=True)
     sub.add_parser('doctor', help='Read-only check of app version, connection and real usage')
-    sub.add_parser('list', help='List all local conversations across pages, including archived; does not monitor anything')
+    sub.add_parser('list', help='List all local conversations across pages, including archived, plus cloud conversations the app remembers (not resumable); does not monitor anything')
     sub.add_parser('status', help='Show watch records')
     web = sub.add_parser('web', help='Start the local browser dashboard')
     web.add_argument('--port', type=int, default=8765)
@@ -132,7 +132,9 @@ def main(argv=None):
     if args.command in ('doctor', 'list'):
         with ReadOnlyServer(codex_binary(args.app), args.home) as server:
             if args.command == 'list':
-                output(list_conversations(server))
+                rows = list_conversations(server)
+                ids = {row['id'] for row in rows}
+                output(rows + [row for row in cloud_conversations(args.home) if row['id'] not in ids])
                 return
             with Desktop(args.home, args.app):
                 pass
