@@ -100,21 +100,29 @@ def interrupted_context_picker(state, request):
     return len(matches) == 1 and matches[0].get('status') == 'interrupted'
 
 
+# Hosts whose conversations this tool may resume. `durable` is the App's cloud
+# ("Long-lived") host; its conversations are stored server-side.
+SUPPORTED_HOSTS = ('local', 'durable')
+
+
 def persisted(state):
-    """True only for a conversation saved to disk.
+    """True only for a conversation that is saved, not ephemeral.
 
     Older Apps send `ephemeral: false`. Since 26.1013 the field is omitted, so a
-    missing value is accepted only when the conversation's rollout file exists.
+    missing value is accepted only when the conversation's rollout file exists,
+    or when it lives on the server-backed `durable` host.
     """
     if 'ephemeral' in state:
         return state['ephemeral'] is False
+    if state.get('hostId') == 'durable':
+        return True
     path = state.get('rolloutPath')
     return isinstance(path, str) and bool(path) and Path(path).is_file()
 
 
 def decide(state):
-    if not isinstance(state, dict) or state.get('hostId') != 'local':
-        return Decision('stop', 'Only local app conversations are supported', task_state='unsupported')
+    if not isinstance(state, dict) or state.get('hostId') not in SUPPORTED_HOSTS:
+        return Decision('stop', 'Only local and cloud (durable) app conversations are supported', task_state='unsupported')
     if not persisted(state):
         return Decision('stop', 'Ephemeral or unknown conversation types are not supported', task_state='unsupported')
     if state.get('resumeState') != 'resumed':

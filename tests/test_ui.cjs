@@ -155,12 +155,12 @@ test('archived conversations remain searchable when requested',()=>{
   assert.match(h.el('thread-options').textContent,/Task B/);
 });
 
-test('cloud conversations are listed with a not-resumable badge',()=>{
+test('cloud conversations are listed with a Cloud badge',()=>{
   const h=harness();
-  assert.doesNotMatch(h.el('thread-options').textContent,/Cloud · not resumable/);
+  assert.doesNotMatch(h.el('thread-options').textContent,/Cloud/);
   h.run(`threads[1].host='durable';renderThreads();`);
   assert.equal(h.el('thread-options').children.length,2);
-  assert.match(h.el('thread-options').textContent,/Cloud · not resumable/);
+  assert.match(h.el('thread-options').textContent,/Cloud/);
 });
 
 test('ordinary task selection and watch cards do not display internal UUIDs',()=>{

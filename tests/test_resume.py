@@ -198,6 +198,14 @@ class PolicyTests(unittest.TestCase):
             s = state(); del s['ephemeral']; s['rolloutPath'] = path
             self.assertEqual(decide(s).action, 'stop', path)
 
+    def test_durable_host_is_supported_without_rollout_file(self):
+        s = state(); s['hostId'] = 'durable'; del s['ephemeral']; s['rolloutPath'] = ''
+        self.assertEqual(decide(s).action, 'resume')
+        s['ephemeral'] = True
+        self.assertEqual(decide(s).action, 'stop')
+        s = state(); s['hostId'] = 'some-ssh-host'
+        self.assertEqual(decide(s).action, 'stop')
+
     def test_legacy_history(self):
         s = state(); turn = latest_turn(s); del s['turnHistory']; s['turns'] = [turn]
         self.assertEqual(decide(s).action, 'resume')
@@ -321,13 +329,27 @@ class TaskDiscoveryTests(unittest.TestCase):
 
     @patch('codex_resume.tasks.ReadOnlyServer')
     @patch('codex_resume.tasks.Desktop')
-    def test_cloud_thread_is_never_monitorable_and_never_contacted(self, desktop, server):
+    def test_cloud_thread_is_checked_live_through_its_host(self, desktop, server):
+        cloud = state(); cloud['hostId'] = 'durable'; del cloud['ephemeral']; cloud['rolloutPath'] = ''
+        desktop.return_value.__enter__.return_value.snapshot.return_value = cloud
+        with tempfile.TemporaryDirectory() as directory:
+            home = self.cloud_home(directory, {'thread-project-membership-host-ids': {THREAD: 'durable'}})
+            result = inspect_task(home, Path('/app'), THREAD)
+        self.assertTrue(result['canMonitor'])
+        self.assertEqual((result['taskState'], result['host'], result['source']), ('quota_limited', 'durable', 'live'))
+        self.assertEqual(desktop.call_args.kwargs, {'host': 'durable'})
+        server.assert_not_called()
+
+    @patch('codex_resume.tasks.ReadOnlyServer')
+    @patch('codex_resume.tasks.Desktop')
+    def test_unloaded_cloud_thread_cannot_enroll_from_history(self, desktop, server):
+        desktop.return_value.__enter__.return_value.snapshot.side_effect = ThreadUnavailable()
         with tempfile.TemporaryDirectory() as directory:
             home = self.cloud_home(directory, {'thread-project-membership-host-ids': {THREAD: 'durable'}})
             result = inspect_task(home, Path('/app'), THREAD)
         self.assertFalse(result['canMonitor'])
-        self.assertEqual((result['taskState'], result['decision'], result['host']), ('cloud', 'stop', 'durable'))
-        server.assert_not_called(); desktop.assert_not_called()
+        self.assertEqual(result['taskState'], 'connecting')
+        server.assert_not_called()
 
     @patch('codex_resume.tasks.ReadOnlyServer')
     @patch('codex_resume.tasks.Desktop')
@@ -726,6 +748,46 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(set(request), {'threadId','clientUserMessageId','input'})
         with self.assertRaises(AppError): app.resume(THREAD,'changed','message2')
         self.assertEqual(len(calls),1)
+
+    def test_cloud_owner_and_turns_use_host_scoped_requests(self):
+        app = Desktop('/unused', host='durable'); app.thread_id = THREAD
+        calls = []
+        def request(method, params, version, target=None, host=None):
+            calls.append((method, version, target, host))
+            return {'handledByClientId': 'window', 'result': {'result': {'turn': {'id': 'new'}}}}
+        app.request = request
+        self.assertEqual(app.discover_owner(), 'window')
+        app.follower_request('thread-follower-start-turn', {}, 'window')
+        self.assertEqual(calls, [('thread-follower-read-model-settings', 2, None, 'durable'),
+                                 ('thread-follower-start-turn', 3, 'window', 'durable')])
+        local = Desktop('/unused'); local.thread_id = THREAD; local.request = request; calls.clear()
+        local.discover_owner(); local.follower_request('thread-follower-start-turn', {}, 'owner')
+        self.assertEqual(calls, [('thread-owner-discovery', 1, None, None), ('thread-follower-start-turn', 2, 'owner', None)])
+
+    def test_cloud_state_only_from_its_host(self):
+        cloud = state(); cloud['hostId'] = 'durable'
+        def broadcast(host):
+            return {'type':'broadcast','sourceClientId':'owner','method':'thread-stream-state-changed','version':11,
+                    'params':{'hostId':host,'conversationId':THREAD,'change':{'type':'snapshot','conversationState':cloud}}}
+        app = Desktop('/unused', host='durable'); app.owner = 'owner'; app.thread_id = THREAD
+        app.sock = FakeSocket([broadcast('local')]); app._read(time.monotonic()+1)
+        self.assertIsNone(app.snapshot_value)
+        app.sock = FakeSocket([broadcast('durable')]); app._read(time.monotonic()+1)
+        self.assertEqual(app.snapshot_value['hostId'], 'durable')
+        app.sock = FakeSocket([]); app.follow(True)
+        self.assertEqual(app.sock.sent[0]['params']['hostId'], 'durable')
+
+    @patch('codex_resume.app.subprocess.run')
+    @patch('codex_resume.app.check_version')
+    def test_cloud_thread_opens_with_its_host(self, check, run):
+        from codex_resume.app import open_selected_thread
+        open_selected_thread('/app', THREAD, 'durable')
+        self.assertEqual(run.call_args.args[0][-1], f'codex://threads/{THREAD}?hostId=durable')
+        open_selected_thread('/app', THREAD)
+        self.assertEqual(run.call_args.args[0][-1], f'codex://threads/{THREAD}')
+        for host in ('a/b', 'x&prompt=hi', '', None):
+            with self.assertRaises(AppError): open_selected_thread('/app', THREAD, host)
+            with self.assertRaises(AppError): Desktop('/unused', host=host)
 
     def test_read_only_rpc_refuses_mutations(self):
         server=ReadOnlyServer('/unused','/unused')

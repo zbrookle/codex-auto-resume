@@ -27,7 +27,7 @@ const assessments = new Map();
 const taskStates = {running:'Running', quota_limited:'Paused by usage limit', needs_attention:'Needs your attention',
   idle:'Turn finished', empty:'Empty conversation', interrupted:'Stopped manually', other_failure:'Other error',
   unsupported:'Not supported', unknown:'Unknown status', connecting:'Waiting for connection', archived:'Archived',
-  cloud:'Cloud · not resumable'};
+  cloud:'Cloud'};
 const states = {
   starting: ['Starting', 'muted'], watching: ['Monitoring · running', ''], waiting_quota: ['Monitoring · waiting for usage', 'warning'],
   waiting_connection: ['Monitoring · waiting for connection', 'warning'], needs_attention: ['Needs your attention', 'warning'],
@@ -253,7 +253,7 @@ function renderThreads() {
     const marker=node('span','selection-marker','Selected'); marker.hidden=true;
     button.append(node('strong','',t.title),node('span','task-state meta','Select to check status'),marker);
     if(t.archived) button.append(node('span','pill muted','Archived'));
-    if(t.host && t.host!=='local') button.append(node('span','pill muted','Cloud · not resumable'));
+    if(t.host && t.host!=='local') button.append(node('span','pill muted','Cloud'));
     button.addEventListener('click',()=>{ if(starting) return; $('thread-id').value=t.id; updateSelection(); checkTask(); }); return button;
   });
   $('thread-options').replaceChildren(...(buttons.length ? buttons : [node('p','meta',term?'No matching conversations; try another title.':'No local conversations yet; start a task in Codex first.')]));

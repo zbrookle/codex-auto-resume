@@ -46,11 +46,11 @@ def list_conversations(server, archive_filters=(False, True)):
 
 
 def cloud_conversations(home):
-    """Cloud-hosted conversations the App remembers in its local state. Display only.
+    """Cloud-hosted conversations the App remembers in its local state.
 
-    The App reaches these through its own connection to a cloud host, and only
-    lets other clients follow local conversations, so they are never resumable.
-    Unreadable or unexpected state yields an empty list.
+    Their live state and resumption go through the App with host-scoped
+    requests; this list only supplies ids, hosts and labels. Unreadable or
+    unexpected state yields an empty list.
     """
     try:
         state = json.loads((Path(home) / '.codex-global-state.json').read_text())
@@ -87,12 +87,36 @@ def cloud_conversations(home):
     return sorted(rows, key=lambda r: r['updatedAt'] or 0, reverse=True)
 
 
-def cloud_assessment(row):
+def thread_host(home, thread_id):
+    """The App host for a conversation: a remembered cloud host, otherwise local."""
+    return next((r['host'] for r in cloud_conversations(home) if r['id'] == thread_id), 'local')
+
+
+def live_assessment(state, thread_id, host):
+    decision = decide(state)
+    return {'threadId': thread_id, 'title': state.get('title'), 'host': host,
+            'decision': decision.action, 'reason': decision.reason,
+            'taskState': decision.task_state,
+            'canMonitor': decision.task_state in ('running', 'quota_limited'),
+            'source': 'live', 'connection': 'connected', 'checkedAt': time.time(),
+            'runtime': state.get('threadRuntimeStatus'), 'model': state.get('latestModel'),
+            'ignoredInterruptedPickerRequests': sum(interrupted_context_picker(state, r)
+                for r in state.get('requests', [])) if isinstance(state.get('requests'), list) else 0}
+
+
+def inspect_cloud_task(home, app_path, row):
+    """Cloud conversations have no local history, so only live App state counts."""
+    try:
+        with Desktop(home, app_path, host=row['host']) as desktop:
+            state = desktop.snapshot(row['id'])
+        if decide(state).task_state != 'connecting':
+            return live_assessment(state, row['id'], row['host'])
+    except (ConnectionUnavailable, ConnectionError, FileNotFoundError, TimeoutError, socket.timeout):
+        pass
     return {'threadId': row['id'], 'title': row.get('name') or row.get('preview'), 'host': row['host'],
-            'decision': 'stop', 'canMonitor': False, 'taskState': 'cloud',
-            'source': 'history', 'connection': 'not_checked', 'checkedAt': time.time(),
-            'reason': f"This conversation runs on a cloud host ({row['host']}). The app only lets this tool "
-                      'follow and resume local conversations, so it can\'t be monitored'}
+            'decision': 'stop', 'canMonitor': False, 'taskState': 'connecting',
+            'source': 'live', 'connection': 'waiting', 'checkedAt': time.time(),
+            'reason': 'Open this cloud conversation in the app once so its live status can be checked'}
 
 
 def stored_assessment(thread, thread_id):
@@ -131,7 +155,7 @@ def inspect_task(home, app_path, thread_id):
     thread_id = str(uuid.UUID(thread_id))
     cloud = next((r for r in cloud_conversations(home) if r['id'] == thread_id), None)
     if cloud:
-        return cloud_assessment(cloud)
+        return inspect_cloud_task(home, app_path, cloud)
     # Archiving is a user stop signal, even if the last persisted turn was still
     # in progress. Never navigate to or enroll an archived conversation.
     with ReadOnlyServer(codex_binary(app_path), home) as server:
@@ -144,16 +168,8 @@ def inspect_task(home, app_path, thread_id):
     try:
         with Desktop(home, app_path) as desktop:
             state = desktop.snapshot(thread_id)
-        decision = decide(state)
-        if decision.task_state != 'connecting':
-            return {'threadId': thread_id, 'title': state.get('title'),
-                    'decision': decision.action, 'reason': decision.reason,
-                    'taskState': decision.task_state,
-                    'canMonitor': decision.task_state in ('running', 'quota_limited'),
-                    'source': 'live', 'connection': 'connected', 'checkedAt': time.time(),
-                    'runtime': state.get('threadRuntimeStatus'), 'model': state.get('latestModel'),
-                    'ignoredInterruptedPickerRequests': sum(interrupted_context_picker(state, r)
-                        for r in state.get('requests', [])) if isinstance(state.get('requests'), list) else 0}
+        if decide(state).task_state != 'connecting':
+            return live_assessment(state, thread_id, 'local')
     except (ConnectionUnavailable, ConnectionError, FileNotFoundError, TimeoutError, socket.timeout):
         pass
     with ReadOnlyServer(codex_binary(app_path), home) as server:

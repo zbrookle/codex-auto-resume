@@ -12,7 +12,7 @@ from .controller import Controller
 from .policy import quota_status
 from .rpc import ReadOnlyServer
 from .store import Store
-from .tasks import cloud_conversations, inspect_task, list_conversations, stored_assessment
+from .tasks import cloud_conversations, inspect_task, list_conversations, stored_assessment, thread_host
 
 
 def identifier(value):
@@ -83,7 +83,15 @@ def serve_watch(args, store):
             quota.__exit__(None, None, None)
             quota = None
             raise
+    host = thread_host(args.home, args.thread)
     def load_original(tid):
+        if host != 'local':
+            # Cloud conversations have no local history to revalidate; opening
+            # only loads them, and dispatch still requires a fresh live check.
+            if not store.get(tid)['enabled']:
+                return False
+            open_selected_thread(args.app, tid, host)
+            return
         # Revalidate eligibility before navigation as well as before dispatch.
         with ReadOnlyServer(codex_binary(args.app), args.home) as reader:
             if any(r['id'] == tid for r in list_conversations(reader, (True,))):
@@ -94,7 +102,7 @@ def serve_watch(args, store):
         if not store.get(tid)['enabled']:
             return False
         open_selected_thread(args.app, tid)
-    controller = Controller(args.thread, store, lambda: Desktop(args.home, args.app), read_quota, args.limit_id,
+    controller = Controller(args.thread, store, lambda: Desktop(args.home, args.app, host=host), read_quota, args.limit_id,
                             open_thread=load_original)
     previous = None
     try:

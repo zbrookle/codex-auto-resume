@@ -4,6 +4,7 @@ import mmap
 import os
 from pathlib import Path
 import plistlib
+import re
 import select
 import socket
 import stat
@@ -17,7 +18,11 @@ from .policy import decide, fingerprint
 # The IPC message versions this client speaks. Instead of pinning an App release,
 # check_version() requires the installed App to declare these exact versions.
 PROTOCOL = {'thread-stream-state-changed': 11, 'thread-stream-following-changed': 1,
-            'thread-owner-discovery': 1, 'thread-follower-start-turn': 2}
+            'thread-owner-discovery': 1, 'thread-follower-start-turn': 2,
+            'thread-follower-read-model-settings': 1}
+# Conversations on another host (e.g. the cloud `durable` host) are reached with
+# host-scoped follower requests, which the App versions one above the table.
+HOST_SCOPED_VERSION_OFFSET = 1
 _protocol_cache = {}
 MAX_FRAME = 32 * 1024 * 1024
 CONTINUATION = ('Your usage limit has reset. Continue the unfinished work in this conversation. '
@@ -95,7 +100,13 @@ def check_version(app_path):
     return {'version': info.get('CFBundleShortVersionString'), 'build': info.get('CFBundleVersion')}
 
 
-def open_selected_thread(app_path, thread_id):
+def valid_host(host):
+    if not isinstance(host, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', host):
+        raise AppError('Unsupported conversation host')
+    return host
+
+
+def open_selected_thread(app_path, thread_id, host='local'):
     """Navigate to an existing selected conversation. Never prefill/send a prompt.
 
     The App's localConversation deep-link handler checks thread existence
@@ -103,15 +114,18 @@ def open_selected_thread(app_path, thread_id):
     Success here only means navigation was requested; a fresh snapshot is required.
     """
     check_version(app_path)
-    target = str(uuid.UUID(thread_id))
-    subprocess.run(['/usr/bin/open', '-g', '-a', str(app_path), 'codex://threads/' + target],
+    target = 'codex://threads/' + str(uuid.UUID(thread_id))
+    if valid_host(host) != 'local':
+        target += '?hostId=' + host
+    subprocess.run(['/usr/bin/open', '-g', '-a', str(app_path), target],
                    check=True, timeout=5, stdin=subprocess.DEVNULL,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 class Desktop:
-    def __init__(self, home, app_path='/Applications/ChatGPT.app', timeout=12):
+    def __init__(self, home, app_path='/Applications/ChatGPT.app', timeout=12, host='local'):
         self.home, self.app_path, self.timeout = Path(home), Path(app_path), timeout
+        self.host = valid_host(host)
         self.sock = None
         self.client_id = 'initializing-client'
         self.owner = None
@@ -183,7 +197,7 @@ class Desktop:
                         'resultType': 'error', 'error': 'unsupported-by-auto-resume'})
         if msg.get('type') == 'broadcast' and msg.get('method') == 'thread-stream-state-changed':
             params = msg.get('params', {})
-            if params.get('conversationId') == self.thread_id and params.get('hostId') == 'local' and msg.get('sourceClientId') == self.owner:
+            if params.get('conversationId') == self.thread_id and params.get('hostId') == self.host and msg.get('sourceClientId') == self.owner:
                 if msg.get('version') != PROTOCOL['thread-stream-state-changed']:
                     raise AppError('App state protocol version changed')
                 self.state_generation += 1
@@ -198,13 +212,15 @@ class Desktop:
                     raise AppError('Unsupported app state change format')
         return msg
 
-    def request(self, method, params, version, target=None):
+    def request(self, method, params, version, target=None, host=None):
         request_id = str(uuid.uuid4())
         msg = {'type': 'request', 'requestId': request_id, 'sourceClientId': self.client_id,
                'method': method, 'params': params, 'version': version,
                'timeoutMs': int(self.timeout * 1000)}
         if target:
             msg['targetClientId'] = target
+        if host:
+            msg['hostId'] = host
         self._send(msg)
         deadline = time.monotonic() + self.timeout
         while True:
@@ -224,13 +240,27 @@ class Desktop:
     def follow(self, enabled):
         self._send({'type': 'broadcast', 'method': 'thread-stream-following-changed',
                     'sourceClientId': self.client_id, 'targetClientIds': [self.owner], 'version': PROTOCOL['thread-stream-following-changed'],
-                    'params': {'hostId': 'local', 'conversationId': self.thread_id, 'following': enabled}})
+                    'params': {'hostId': self.host, 'conversationId': self.thread_id, 'following': enabled}})
+
+    def follower_request(self, method, params, target=None):
+        """A thread-follower request, host-scoped for conversations on another host."""
+        if self.host == 'local':
+            return self.request(method, params, PROTOCOL[method], target)
+        return self.request(method, params, PROTOCOL[method] + HOST_SCOPED_VERSION_OFFSET, target, self.host)
+
+    def discover_owner(self):
+        if self.host == 'local':
+            reply = self.request('thread-owner-discovery', {'hostId': 'local', 'conversationId': self.thread_id},
+                                 PROTOCOL['thread-owner-discovery'])
+        else:
+            # The App answers owner discovery only for its own host; a read-only
+            # host-scoped request is routed to the owning window instead.
+            reply = self.follower_request('thread-follower-read-model-settings', {'conversationId': self.thread_id})
+        return reply.get('handledByClientId')
 
     def snapshot(self, thread_id):
         self.thread_id = str(uuid.UUID(thread_id))
-        reply = self.request('thread-owner-discovery', {'hostId': 'local', 'conversationId': self.thread_id},
-                             PROTOCOL['thread-owner-discovery'])
-        self.owner = reply.get('handledByClientId')
+        self.owner = self.discover_owner()
         if not isinstance(self.owner, str):
             raise AppError('Missing app task owner')
         self.follow(False)
@@ -271,9 +301,8 @@ class Desktop:
                    'input': [{'type': 'text', 'text': CONTINUATION, 'text_elements': []}]}
         if dispatch_guard is not None and not dispatch_guard():
             raise AppError('Monitoring stopped or send authorization changed; canceling this resume')
-        reply = self.request('thread-follower-start-turn',
-                             {'conversationId': thread_id, 'turnStart': {'request': request}},
-                             PROTOCOL['thread-follower-start-turn'], self.owner)
+        reply = self.follower_request('thread-follower-start-turn',
+                                      {'conversationId': thread_id, 'turnStart': {'request': request}}, self.owner)
         try:
             turn_id = reply['result']['result']['turn']['id']
             if not isinstance(turn_id, str) or not turn_id:

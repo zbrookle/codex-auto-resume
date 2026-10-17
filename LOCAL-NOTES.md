@@ -55,13 +55,22 @@ Review upstream changes before merging, as with the original audit: they run aga
 
 ## Cloud (durable) conversations
 
-`list` and the dashboard also show conversations on cloud hosts such as `durable`, read from the
-App's `~/.codex/.codex-global-state.json`. They're marked "Cloud · not resumable", and `check`/`start`
-refuse them without contacting anything. Tested 2026-10-17 (App 26.1013, CLI 0.163.0-alpha.10.2):
+Conversations on the App's cloud `durable` host ("Long-lived") are listed from
+`~/.codex/.codex-global-state.json` and resumed through the App, like local ones:
 
-- The App only answers owner discovery for its one local host, so the IPC follower route can't reach them.
-- `wss://codex-cloud-backend.chatgpt.com:443` (the `durable` app server) returns 403 to both a
-  stdlib client (Cloudflare challenge) and the official `codex agents --remote`.
-- `codex cloud list` doesn't include them.
+- The App answers `thread-owner-discovery` only for its own host, but every `thread-follower-*`
+  request is routed by the request's own `hostId`. Host-scoped requests use the table version + 1
+  (`HOST_SCOPED_VERSION_OFFSET`). `thread-follower-read-model-settings` (read-only) finds the
+  owning window; state follows and `thread-follower-start-turn` then carry `hostId: durable`.
+- Durable state has no `ephemeral` and an empty `rolloutPath`; the host itself marks it persisted.
+- Usage-limit failures carry the same `codexErrorInfo: usageLimitExceeded` and use the same
+  `codex` usage bucket (the cloud error message prints the reset time in UTC).
+- If the conversation isn't loaded in the App, `check` reports it as connecting and the watcher
+  opens `codex://threads/<id>?hostId=durable`.
 
-Revisit if the CLI gains a supported way to reach the durable host.
+Verified read-only on 26.1013 (2026-10-17): owner routing, live snapshot, `check`. A real cloud
+send has not run yet.
+
+Ruled out: the `durable` app server at `wss://codex-cloud-backend.chatgpt.com:443` returns 403 to
+both a stdlib client (Cloudflare challenge) and `codex agents --remote`; `codex cloud list`
+doesn't include these conversations.
